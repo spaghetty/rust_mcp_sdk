@@ -3,6 +3,9 @@ pub mod common;
 pub mod server;
 pub mod types;
 
+/// Main library file for MCP Rust SDK
+mod adapters;
+
 // Explicitly re-export only unique types to avoid ambiguous glob re-exports
 // (Clippy: ambiguous glob re-exports)
 pub use common::{InitializeRequest, ListResourcesRequest, ListToolsRequest, SessionMessage};
