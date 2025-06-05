@@ -1,0 +1,54 @@
+# Rust/Cargo
+/target/
+**/*.rs.bk
+**/*.swp
+Cargo.lock
+
+# IDEs/editors
+.idea/
+.vscode/
+*.code-workspace
+*.iml
+.DS_Store
+
+# OS files
+Thumbs.db
+
+# Logs
+*.log
+
+# Byproducts
+*.rlib
+*.dSYM/
+*.exe
+*.out
+*.obj
+*.so
+*.dll
+*.dylib
+
+# Coverage/test output
+/coverage/
+/coverage-final.json
+/coverage.lcov
+/target/debug/
+/target/release/
+
+# Misc
+*.tmp
+*.bak
+*.old
+
+# Node/npm (if using JS examples)
+node_modules/
+
+# Ignore local environment files
+.env
+.env.*
+
+# Ignore generated docs (if any)
+doc/
+/docs/book/
+
+# Ignore by default but allow docs/ for design docs
+!/docs/
