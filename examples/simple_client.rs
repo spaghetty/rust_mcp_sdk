@@ -1,7 +1,7 @@
-use mcp::types::*;
 use mcp::client::ClientSessionGroup;
-use url::Url;
+use mcp::types::*;
 use std::error::Error;
+use url::Url;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -12,7 +12,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("[CLIENT] Connecting to server at {}...", server_url);
     // Connect to server
     if let Err(e) = group.connect_to_server(server_url.clone()).await {
-        eprintln!("[CLIENT] Failed to connect to MCP server at {}: {}", server_url, e);
+        eprintln!(
+            "[CLIENT] Failed to connect to MCP server at {}: {}",
+            server_url, e
+        );
         return Ok(());
     }
     println!("[CLIENT] Connected to server at {}", server_url);
@@ -20,7 +23,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // List resources
     println!("[CLIENT DEBUG] About to call list_resources");
     let resources_result = group.list_resources(&server_url).await;
-    println!("[CLIENT DEBUG] list_resources returned: {:?}", resources_result);
+    println!(
+        "[CLIENT DEBUG] list_resources returned: {:?}",
+        resources_result
+    );
     match resources_result {
         Ok(resources) => {
             println!("[CLIENT] Received resources response");
@@ -30,9 +36,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("Description: {}", description);
                 }
             }
-        },
+        }
         Err(e) => {
-            eprintln!("[CLIENT] Failed to list resources from server at {}: {}", server_url, e);
+            eprintln!(
+                "[CLIENT] Failed to list resources from server at {}: {}",
+                server_url, e
+            );
             return Ok(());
         }
     }

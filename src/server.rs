@@ -3,23 +3,34 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
-use url::Url;
 use serde_json::Value;
+use url::Url;
 
-use crate::types::*;
-use crate::types::ToolResult;
 use crate::common::*;
+use crate::types::ToolResult;
+use crate::types::*;
 use crate::Result;
 
 pub struct ServerSession {
-    tool_handler: Option<Arc<StdMutex<Option<Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>>>>>,
+    tool_handler: Option<
+        Arc<
+            StdMutex<
+                Option<
+                    Box<
+                        dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync,
+                    >,
+                >,
+            >,
+        >,
+    >,
 
     read_stream: mpsc::Receiver<SessionMessage>,
     write_stream: mpsc::Sender<SessionMessage>,
     initialized: bool,
     client_params: Option<InitializeRequestParams>,
     client_url: Url,
-    list_resources_handler: Option<Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>>,
+    list_resources_handler:
+        Option<Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>>,
 }
 
 // impl Clone for ServerSession {
@@ -35,16 +46,17 @@ pub struct ServerSession {
 // }
 // Removed: mpsc::Receiver cannot be cloned. If cloning is needed, use a different pattern (e.g., broadcast channel).
 
-
-use tokio::net::TcpStream;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
 
 impl ServerSession {
     pub fn new(
         read_stream: mpsc::Receiver<SessionMessage>,
         write_stream: mpsc::Sender<SessionMessage>,
         client_url: Url,
-        list_resources_handler: Option<Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>>,
+        list_resources_handler: Option<
+            Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>,
+        >,
     ) -> Self {
         Self {
             read_stream,
@@ -57,7 +69,25 @@ impl ServerSession {
         }
     }
 
-    pub fn from_socket(socket: TcpStream, list_resources_handler: Option<Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>>, tool_handler: Option<Arc<StdMutex<Option<Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>>>>>) -> Self {
+    pub fn from_socket(
+        socket: TcpStream,
+        list_resources_handler: Option<
+            Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>,
+        >,
+        tool_handler: Option<
+            Arc<
+                StdMutex<
+                    Option<
+                        Box<
+                            dyn Fn(String, HashMap<String, String>) -> Result<ToolResult>
+                                + Send
+                                + Sync,
+                        >,
+                    >,
+                >,
+            >,
+        >,
+    ) -> Self {
         use tokio::io::{split, BufReader, BufWriter};
         let (read_half, write_half) = split(socket);
         let mut reader = BufReader::new(read_half);
@@ -72,7 +102,9 @@ impl ServerSession {
                 line.clear();
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
-                        println!("[SERVER] TCP read task: connection closed (read_line returned 0)");
+                        println!(
+                            "[SERVER] TCP read task: connection closed (read_line returned 0)"
+                        );
                         break;
                     }
                     Ok(_) => {
@@ -112,7 +144,10 @@ impl ServerSession {
         }
     }
 
-    pub fn with_streams(read_stream: mpsc::Receiver<SessionMessage>, write_stream: mpsc::Sender<SessionMessage>) -> Self {
+    pub fn with_streams(
+        read_stream: mpsc::Receiver<SessionMessage>,
+        write_stream: mpsc::Sender<SessionMessage>,
+    ) -> Self {
         Self {
             read_stream,
             write_stream,
@@ -123,8 +158,6 @@ impl ServerSession {
             tool_handler: None,
         }
     }
-
-
 
     async fn handle_messages(&mut self) -> Result<()> {
         println!("[SERVER] handle_messages: starting message loop");
@@ -142,7 +175,9 @@ impl ServerSession {
                     Err(_) => continue,
                 }
             } else {
-                println!("[SERVER] handle_messages: read_stream channel closed, exiting message loop");
+                println!(
+                    "[SERVER] handle_messages: read_stream channel closed, exiting message loop"
+                );
                 break;
             }
         }
@@ -151,9 +186,11 @@ impl ServerSession {
     }
 
     async fn handle_initialize(&mut self, request: Value) -> Result<()> {
-        let params = request.get("params").ok_or_else(|| anyhow::anyhow!("Missing params"))?;
+        let params = request
+            .get("params")
+            .ok_or_else(|| anyhow::anyhow!("Missing params"))?;
         let params: InitializeRequestParams = serde_json::from_value(params.clone())?;
-        
+
         self.client_params = Some(params.clone());
         self.initialized = true;
 
@@ -181,8 +218,10 @@ impl ServerSession {
     }
 
     async fn handle_list_resources(&mut self, request: Value) -> Result<()> {
-    println!("[SERVER] handle_list_resources called");
-        let params = request.get("params").ok_or_else(|| anyhow::anyhow!("Missing params"))?;
+        println!("[SERVER] handle_list_resources called");
+        let params = request
+            .get("params")
+            .ok_or_else(|| anyhow::anyhow!("Missing params"))?;
         let params: PaginatedRequestParams = serde_json::from_value(params.clone())?;
 
         let resources = if let Some(handler_arc) = &self.list_resources_handler {
@@ -214,7 +253,9 @@ impl ServerSession {
 
     async fn handle_call_tool(&mut self, request: Value) -> Result<()> {
         // This expects request["params"] to have "name" and "arguments"
-        let params = request.get("params").ok_or_else(|| anyhow::anyhow!("Missing params"))?;
+        let params = request
+            .get("params")
+            .ok_or_else(|| anyhow::anyhow!("Missing params"))?;
         let params: crate::types::ToolCallParams = serde_json::from_value(params.clone())?;
         let result = if let Some(handler_arc) = &self.tool_handler {
             let guard = handler_arc.lock().unwrap();
@@ -230,15 +271,21 @@ impl ServerSession {
         // (You may need to adapt this to your protocol)
         match result {
             Ok(tool_result) => self.send_response(tool_result).await,
-            Err(e) => self.send_response(ToolResult {
-                result: None,
-                error: Some(e.to_string()),
-            }).await,
+            Err(e) => {
+                self.send_response(ToolResult {
+                    result: None,
+                    error: Some(e.to_string()),
+                })
+                .await
+            }
         }
     }
 
     async fn handle_unknown_method(&mut self, method: &str, _value: &Value) -> Result<()> {
-        println!("[SERVER] handle_unknown_method called for method: {}", method);
+        println!(
+            "[SERVER] handle_unknown_method called for method: {}",
+            method
+        );
         // Send an error response for unknown/unimplemented methods
         let error_message = format!("Method '{}' not implemented", method);
         let error_response = serde_json::json!({
@@ -269,8 +316,15 @@ use std::sync::Mutex as StdMutex;
 
 pub struct Server {
     sessions: Arc<Mutex<HashMap<Url, Arc<tokio::sync::Mutex<ServerSession>>>>>,
-    pub list_resources_handler: Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>,
-    pub tool_handler: Arc<StdMutex<Option<Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>>>>,
+    pub list_resources_handler:
+        Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>,
+    pub tool_handler: Arc<
+        StdMutex<
+            Option<
+                Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>,
+            >,
+        >,
+    >,
 }
 
 impl Server {
@@ -317,7 +371,11 @@ impl Server {
             let list_resources_handler = self.list_resources_handler.clone();
             let tool_handler = self.tool_handler.clone();
             tokio::spawn(async move {
-                let mut session = ServerSession::from_socket(socket, Some(list_resources_handler), Some(tool_handler));
+                let mut session = ServerSession::from_socket(
+                    socket,
+                    Some(list_resources_handler),
+                    Some(tool_handler),
+                );
                 let _ = session.handle_messages().await;
             });
         }

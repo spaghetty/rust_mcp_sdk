@@ -1,7 +1,7 @@
-pub mod types;
 pub mod client;
-pub mod server;
 pub mod common;
+pub mod server;
+pub mod types;
 
 pub use common::*;
 pub use types::*;

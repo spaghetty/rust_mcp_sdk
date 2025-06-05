@@ -1,13 +1,18 @@
 use std::collections::HashMap;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use url::Url;
 
 use serde_json::Value;
 
-use crate::types::{Implementation, InitializeRequest, InitializeRequestParams, ClientCapabilities, SamplingCapability, RootsCapability, Tool, Resource, ListResourcesRequest, ListToolsRequest, ToolCallRequest, ToolCallParams, PaginatedRequestParams, ListToolsResult, ListResourcesResult, ToolResult, InitializeResult};
+use crate::types::{
+    ClientCapabilities, Implementation, InitializeRequest, InitializeRequestParams,
+    InitializeResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest, ListToolsResult,
+    PaginatedRequestParams, Resource, RootsCapability, SamplingCapability, Tool, ToolCallParams,
+    ToolCallRequest, ToolResult,
+};
 use crate::Result;
 
 pub struct ClientSession {
@@ -18,8 +23,6 @@ pub struct ClientSession {
     list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
     logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
 }
-
-
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionMessage {
@@ -82,7 +85,10 @@ impl ClientSession {
         self.send_request(request).await
     }
 
-    pub async fn list_resources(&mut self, params: PaginatedRequestParams) -> Result<ListResourcesResult> {
+    pub async fn list_resources(
+        &mut self,
+        params: PaginatedRequestParams,
+    ) -> Result<ListResourcesResult> {
         let request = ListResourcesRequest::new(params);
         self.send_request(request).await
     }
@@ -92,15 +98,26 @@ impl ClientSession {
         self.send_request(request).await
     }
 
-    pub async fn call_tool(&mut self, name: String, arguments: HashMap<String, String>) -> Result<ToolResult> {
+    pub async fn call_tool(
+        &mut self,
+        name: String,
+        arguments: HashMap<String, String>,
+    ) -> Result<ToolResult> {
         let params = ToolCallParams { name, arguments };
         let request = ToolCallRequest::new(params);
         self.send_request(request).await
     }
 
-    async fn send_request<T: for<'de> serde::Deserialize<'de>>(&mut self, request: impl serde::Serialize) -> Result<T> {
+    async fn send_request<T: for<'de> serde::Deserialize<'de>>(
+        &mut self,
+        request: impl serde::Serialize,
+    ) -> Result<T> {
         // Send request
-        self.write_stream.send(SessionMessage { message: serde_json::to_value(request)? }).await?;
+        self.write_stream
+            .send(SessionMessage {
+                message: serde_json::to_value(request)?,
+            })
+            .await?;
 
         // Wait for response from self.read_stream
         loop {
@@ -113,7 +130,10 @@ impl ClientSession {
                 match serde_json::from_value::<T>(message.message.clone()) {
                     Ok(result) => return Ok(result),
                     Err(e) => {
-                        println!("[CLIENT DEBUG] Failed to deserialize message: {}\nMessage: {:?}", e, message.message);
+                        println!(
+                            "[CLIENT DEBUG] Failed to deserialize message: {}\nMessage: {:?}",
+                            e, message.message
+                        );
                         continue; // Skip non-matching messages
                     }
                 }
@@ -181,7 +201,11 @@ impl ClientSessionGroup {
         }
     }
 
-    pub async fn list_tools(&mut self, server_url: &Url, params: PaginatedRequestParams) -> Result<ListToolsResult> {
+    pub async fn list_tools(
+        &mut self,
+        server_url: &Url,
+        params: PaginatedRequestParams,
+    ) -> Result<ListToolsResult> {
         if let Some(session) = self.sessions.get(server_url) {
             let mut guard = session.lock().await;
             guard.list_tools(params).await
@@ -190,7 +214,12 @@ impl ClientSessionGroup {
         }
     }
 
-    pub async fn call_tool(&mut self, server_url: &Url, name: String, arguments: HashMap<String, String>) -> Result<ToolResult> {
+    pub async fn call_tool(
+        &mut self,
+        server_url: &Url,
+        name: String,
+        arguments: HashMap<String, String>,
+    ) -> Result<ToolResult> {
         if let Some(session) = self.sessions.get(server_url) {
             let mut guard = session.lock().await;
             guard.call_tool(name, arguments).await
@@ -208,9 +237,9 @@ impl ClientSessionGroup {
     }
 
     pub async fn connect_to_server(&mut self, server_url: Url) -> Result<()> {
-        use tokio::net::TcpStream;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
         use std::sync::Arc;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+        use tokio::net::TcpStream;
         let addr = match server_url.socket_addrs(|| None) {
             Ok(addrs) => addrs[0],
             Err(_) => return Err(anyhow::anyhow!("Invalid server URL for TCP connection")),
@@ -219,8 +248,12 @@ impl ClientSessionGroup {
         let (read_half, write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         let mut writer = BufWriter::new(write_half);
-        let (read_tx, read_rx): (mpsc::Sender<SessionMessage>, mpsc::Receiver<SessionMessage>) = mpsc::channel(100);
-        let (write_tx, mut write_rx): (mpsc::Sender<SessionMessage>, mpsc::Receiver<SessionMessage>) = mpsc::channel(100);
+        let (read_tx, read_rx): (mpsc::Sender<SessionMessage>, mpsc::Receiver<SessionMessage>) =
+            mpsc::channel(100);
+        let (write_tx, mut write_rx): (
+            mpsc::Sender<SessionMessage>,
+            mpsc::Receiver<SessionMessage>,
+        ) = mpsc::channel(100);
         // Spawn read task
         tokio::spawn(async move {
             let mut line = String::new();
@@ -234,7 +267,10 @@ impl ClientSessionGroup {
                             println!("[CLIENT TCP DEBUG] Parsed as SessionMessage: {:?}", msg);
                             let _ = read_tx.send(msg).await;
                         } else {
-                            println!("[CLIENT TCP DEBUG] Failed to parse line as SessionMessage: {:?}", line);
+                            println!(
+                                "[CLIENT TCP DEBUG] Failed to parse line as SessionMessage: {:?}",
+                                line
+                            );
                         }
                     }
                     Err(_) => break,

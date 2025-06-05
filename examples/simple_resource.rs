@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 
-
-
 use url::Url;
 
-use mcp::types::*;
 use mcp::server::Server;
+use mcp::types::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,7 +35,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[SERVER] Returning resources: {:?}", resources);
         resources
     });
-
 
     println!("[SERVER] Starting server on 127.0.0.1:8000");
     server.run("127.0.0.1:8000").await?;

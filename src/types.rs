@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use url::Url;
 use std::collections::HashMap;
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Implementation {
@@ -126,7 +126,6 @@ pub struct TextContent {
     pub text: String,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeRequest {
     #[serde(rename = "method")]
@@ -135,10 +134,12 @@ pub struct InitializeRequest {
 }
 impl InitializeRequest {
     pub fn new(params: InitializeRequestParams) -> Self {
-        Self { method: "initialize", params }
+        Self {
+            method: "initialize",
+            params,
+        }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResourcesRequest {
@@ -148,10 +149,12 @@ pub struct ListResourcesRequest {
 }
 impl ListResourcesRequest {
     pub fn new(params: PaginatedRequestParams) -> Self {
-        Self { method: "resources/list", params }
+        Self {
+            method: "resources/list",
+            params,
+        }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListToolsRequest {
@@ -161,10 +164,12 @@ pub struct ListToolsRequest {
 }
 impl ListToolsRequest {
     pub fn new(params: PaginatedRequestParams) -> Self {
-        Self { method: "tools/list", params }
+        Self {
+            method: "tools/list",
+            params,
+        }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallParams {
@@ -180,10 +185,12 @@ pub struct ToolCallRequest {
 }
 impl ToolCallRequest {
     pub fn new(params: ToolCallParams) -> Self {
-        Self { method: "tool/call", params }
+        Self {
+            method: "tool/call",
+            params,
+        }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResourcesResult {

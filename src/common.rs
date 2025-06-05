@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::types::{InitializeRequestParams, PaginatedRequestParams};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
