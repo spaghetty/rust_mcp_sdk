@@ -20,3 +20,19 @@ pub struct ListResourcesRequest {
 pub struct ListToolsRequest {
     pub params: PaginatedRequestParams,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn test_session_message_serialization() {
+        let msg = SessionMessage {
+            message: serde_json::json!({"foo": "bar"}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: SessionMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg.message, deserialized.message);
+    }
+}

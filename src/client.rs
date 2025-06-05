@@ -190,6 +190,20 @@ pub struct ClientSessionGroup {
 }
 
 impl ClientSessionGroup {
+    /// Only public for integration testing in `tests/`.
+    pub async fn list_resources_with_params(
+        &mut self,
+        server_url: &Url,
+        params: PaginatedRequestParams,
+    ) -> Result<ListResourcesResult> {
+        if let Some(session) = self.sessions.get(server_url) {
+            let mut guard = session.lock().await;
+            guard.list_resources(params).await
+        } else {
+            Err(anyhow::anyhow!("No session for the given server_url"))
+        }
+    }
+
     pub async fn list_resources(&mut self, server_url: &Url) -> Result<ListResourcesResult> {
         if let Some(session) = self.sessions.get(server_url) {
             let mut guard = session.lock().await;

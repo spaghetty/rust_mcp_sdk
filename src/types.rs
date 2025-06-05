@@ -249,3 +249,19 @@ pub struct CancelledNotificationParams {
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_implementation_fields() {
+        let imp = Implementation {
+            name: "test-sdk".to_string(),
+            version: "0.1.0".to_string(),
+        };
+        assert_eq!(imp.name, "test-sdk");
+        assert_eq!(imp.version, "0.1.0");
+    }
+}
+

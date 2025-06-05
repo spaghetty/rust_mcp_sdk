@@ -1,5 +1,5 @@
 use mcp::client::ClientSessionGroup;
-use mcp::types::*;
+
 use std::error::Error;
 use url::Url;
 
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             // Try to call the echo tool if present
-            if let Some(echo_tool) = tools_result.tools.iter().find(|t| t.name == "echo") {
+            if let Some(_echo_tool) = tools_result.tools.iter().find(|t| t.name == "echo") {
                 println!("[CLIENT] Calling 'echo' tool...");
                 let mut args = std::collections::HashMap::new();
                 args.insert("message".to_string(), "Hello from client!".to_string());
