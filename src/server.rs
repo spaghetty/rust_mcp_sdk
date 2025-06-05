@@ -315,7 +315,7 @@ impl ServerSession {
 use std::sync::Mutex as StdMutex;
 
 pub struct Server {
-    _sessions: Arc<Mutex<HashMap<Url, Arc<tokio::sync::Mutex<ServerSession>>>>>, 
+    _sessions: Arc<Mutex<HashMap<Url, Arc<tokio::sync::Mutex<ServerSession>>>>>,
     pub list_resources_handler:
         Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>,
     pub tool_handler: Arc<

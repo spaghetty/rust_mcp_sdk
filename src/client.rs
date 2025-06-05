@@ -120,7 +120,7 @@ impl ClientSession {
         // Wait for response from self.read_stream
         loop {
             if let Some(message) = self.read_stream.recv().await {
-                println!("[CLIENT DEBUG] Raw message received: {:?}", message);
+            println!("[CLIENT DEBUG] Raw message received: {:?}", message);
                 // Check for error field in the response
                 if let Some(error_msg) = message.message.get("error").and_then(|e| e.as_str()) {
                     return Err(anyhow::anyhow!("Server error: {}", error_msg));
@@ -145,7 +145,7 @@ impl ClientSession {
     async fn handle_messages(&mut self) -> Result<()> {
         loop {
             if let Some(message) = self.read_stream.recv().await {
-                match serde_json::from_value::<Value>(message.message) {
+            match serde_json::from_value::<Value>(message.message) {
                     Ok(value) => match value.get("method").and_then(|m| m.as_str()) {
                         Some("initialize") => self.handle_initialize(value).await?,
                         Some("resources/list") => self.handle_list_resources(value).await?,
