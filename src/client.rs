@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 use url::Url;
 
 use serde_json::Value;
@@ -19,9 +17,9 @@ pub struct ClientSession {
     read_stream: mpsc::Receiver<SessionMessage>,
     write_stream: mpsc::Sender<SessionMessage>,
     client_info: Implementation,
-    sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
-    list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
-    logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
+    _sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
+    _list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
+    _logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -57,9 +55,9 @@ impl ClientSession {
             read_stream,
             write_stream,
             client_info,
-            sampling_callback,
-            list_roots_callback,
-            logging_callback,
+            _sampling_callback: sampling_callback,
+            _list_roots_callback: list_roots_callback,
+            _logging_callback: logging_callback,
         }
     }
 
@@ -186,9 +184,9 @@ impl ClientSession {
 
 pub struct ClientSessionGroup {
     sessions: HashMap<Url, Arc<tokio::sync::Mutex<ClientSession>>>,
-    tools: HashMap<String, Tool>,
-    resources: HashMap<String, Resource>,
-    prompts: HashMap<String, Value>,
+    _tools: HashMap<String, Tool>,
+    _resources: HashMap<String, Resource>,
+    _prompts: HashMap<String, Value>,
 }
 
 impl ClientSessionGroup {
@@ -230,9 +228,9 @@ impl ClientSessionGroup {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
-            tools: HashMap::new(),
-            resources: HashMap::new(),
-            prompts: HashMap::new(),
+            _tools: HashMap::new(),
+            _resources: HashMap::new(),
+            _prompts: HashMap::new(),
         }
     }
 

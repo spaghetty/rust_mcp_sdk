@@ -46,7 +46,7 @@ pub struct ServerSession {
 // }
 // Removed: mpsc::Receiver cannot be cloned. If cloning is needed, use a different pattern (e.g., broadcast channel).
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 impl ServerSession {
@@ -315,7 +315,7 @@ impl ServerSession {
 use std::sync::Mutex as StdMutex;
 
 pub struct Server {
-    sessions: Arc<Mutex<HashMap<Url, Arc<tokio::sync::Mutex<ServerSession>>>>>,
+    _sessions: Arc<Mutex<HashMap<Url, Arc<tokio::sync::Mutex<ServerSession>>>>>, 
     pub list_resources_handler:
         Arc<StdMutex<Option<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>>,
     pub tool_handler: Arc<
@@ -336,7 +336,7 @@ impl Server {
         *guard = Some(Box::new(handler));
     }
 
-    pub fn list_tools<F, Fut>(&mut self, handler: F)
+    pub fn list_tools<F, Fut>(&mut self, _handler: F)
     where
         F: Fn(Value) -> Fut + 'static + Send + Sync,
         Fut: std::future::Future<Output = Result<ListToolsResult>> + Send + 'static,
@@ -355,7 +355,7 @@ impl Server {
     }
     pub fn new() -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            _sessions: Arc::new(Mutex::new(HashMap::new())),
             list_resources_handler: Arc::new(StdMutex::new(None)),
             tool_handler: Arc::new(StdMutex::new(None)),
         }
