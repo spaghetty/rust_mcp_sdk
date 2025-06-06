@@ -3,7 +3,7 @@
 use super::client_tcp::{NetworkStream, TcpNetworkStream};
 use async_trait::async_trait;
 use std::io;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use url::Url;
 
 #[async_trait]
@@ -62,7 +62,10 @@ mod tests {
             let server_adapter = TcpServerAdapter;
             let url = Url::parse("tcp://256.256.256.256:12345").unwrap();
             let result = server_adapter.bind(&url).await;
-            assert!(result.is_err(), "Expected error when binding to invalid address");
+            assert!(
+                result.is_err(),
+                "Expected error when binding to invalid address"
+            );
         });
     }
 

@@ -37,7 +37,7 @@ pub struct InitializeResult {
     pub instructions: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientCapabilities {
     pub sampling: Option<SamplingCapability>,
     pub roots: Option<RootsCapability>,
@@ -51,6 +51,22 @@ pub struct ServerCapabilities {
     pub roots: Option<RootsCapability>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl ServerCapabilities {
+    pub fn default() -> Self {
+        ServerCapabilities {
+            sampling: Some(SamplingCapability {
+                sample_size: 100,
+                extra: HashMap::new(),
+            }),
+            roots: Some(RootsCapability {
+                list_changed: true,
+                extra: HashMap::new(),
+            }),
+            extra: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

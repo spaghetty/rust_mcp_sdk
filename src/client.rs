@@ -1,31 +1,47 @@
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use url::Url;
 
+use crate::protocol::{InitializePayload, ProtocolMessage};
 use serde_json::Value;
+use tokio::io::{BufReader, BufWriter};
 
 use crate::types::{
     ClientCapabilities, Implementation, InitializeRequest, InitializeRequestParams,
     InitializeResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest, ListToolsResult,
-    PaginatedRequestParams, Resource, RootsCapability, SamplingCapability, Tool, ToolCallParams,
-    ToolCallRequest, ToolResult,
+    PaginatedRequestParams, Resource, RootsCapability, SamplingCapability, ServerCapabilities,
+    Tool, ToolCallParams, ToolCallRequest, ToolResult,
 };
 use crate::Result;
 
-pub struct ClientSession {
-    read_stream: mpsc::Receiver<SessionMessage>,
-    write_stream: mpsc::Sender<SessionMessage>,
-    client_info: Implementation,
-    _sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
-    _list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
-    _logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
+pub struct ClientSessionInner {
+    pub read_stream: mpsc::Receiver<ProtocolMessage>,
+    pub write_stream: mpsc::Sender<ProtocolMessage>,
+    pub client_info: Implementation,
+    pub _sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
+    pub _list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
+    pub _logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SessionMessage {
-    pub message: Value,
+impl ClientSessionInner {
+    pub async fn send_to_write_stream(&mut self, msg: ProtocolMessage) -> crate::Result<()> {
+        self.write_stream
+            .send(msg)
+            .await
+            .map_err(|e| anyhow::anyhow!("Send error: {:?}", e))
+    }
+    pub async fn recv_from_read_stream(&mut self) -> Option<ProtocolMessage> {
+        self.read_stream.recv().await
+    }
 }
+
+pub struct ClientSession {
+    inner: tokio::sync::Mutex<ClientSessionInner>,
+}
+
+// SessionMessage is replaced by ProtocolMessage for protocol-level communication.
 
 #[async_trait::async_trait]
 pub trait SamplingCallback {
@@ -44,51 +60,106 @@ pub trait LoggingCallback {
 
 impl ClientSession {
     pub fn new(
-        read_stream: mpsc::Receiver<SessionMessage>,
-        write_stream: mpsc::Sender<SessionMessage>,
+        read_stream: mpsc::Receiver<ProtocolMessage>,
+        write_stream: mpsc::Sender<ProtocolMessage>,
         client_info: Implementation,
         sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
         list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
         logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
     ) -> Self {
-        Self {
+        let inner = ClientSessionInner {
             read_stream,
             write_stream,
             client_info,
             _sampling_callback: sampling_callback,
             _list_roots_callback: list_roots_callback,
             _logging_callback: logging_callback,
+        };
+        Self {
+            inner: tokio::sync::Mutex::new(inner),
         }
     }
 
-    pub async fn initialize(&mut self) -> Result<InitializeResult> {
-        let params = InitializeRequestParams {
-            protocol_version: "1.0".to_string(),
-            capabilities: ClientCapabilities {
-                sampling: Some(SamplingCapability {
-                    sample_size: 100,
-                    extra: HashMap::new(),
-                }),
-                roots: Some(RootsCapability {
-                    list_changed: true,
-                    extra: HashMap::new(),
-                }),
-                extra: HashMap::new(),
-            },
-            client_info: self.client_info.clone(),
-            extra: HashMap::new(),
+    pub async fn initialize(&self) -> Result<InitializeResult> {
+        // Send protocol handshake
+        let client_info_name = {
+            let inner = self.inner.lock().await;
+            inner.client_info.name.clone()
         };
-
-        let request = InitializeRequest::new(params);
-        self.send_request(request).await
+        let handshake = ProtocolMessage::Initialize(InitializePayload {
+            protocol_version: "1.0".to_string(),
+            client_info: Some(client_info_name),
+            server_info: None,
+        });
+        {
+            let mut inner = self.inner.lock().await;
+            inner.send_to_write_stream(handshake).await?;
+        }
+        // Await handshake response
+        let msg = {
+            let mut inner = self.inner.lock().await;
+            inner.recv_from_read_stream().await
+        };
+        if let Some(msg) = msg {
+            if let ProtocolMessage::Initialize(payload) = msg {
+                // Optionally check protocol version, server_info, etc.
+                // Continue with real initialization logic if needed
+                Ok(InitializeResult {
+                    protocol_version: payload.protocol_version,
+                    capabilities: ServerCapabilities::default(),
+                    server_info: Implementation {
+                        name: payload
+                            .server_info
+                            .unwrap_or_else(|| "unknown-server".to_string()),
+                        version: "unknown".to_string(),
+                    },
+                    instructions: None,
+                })
+            } else {
+                Err(anyhow::anyhow!(
+                    "Unexpected protocol message during handshake"
+                ))
+            }
+        } else {
+            Err(anyhow::anyhow!("No handshake response from server"))
+        }
     }
 
     pub async fn list_resources(
-        &mut self,
+        &self,
         params: PaginatedRequestParams,
     ) -> Result<ListResourcesResult> {
+        let mut inner = self.inner.lock().await;
         let request = ListResourcesRequest::new(params);
-        self.send_request(request).await
+        println!("[CLIENT DEBUG] ListResources Sending request: {:?}", request);
+        inner
+            .send_to_write_stream(ProtocolMessage::Data(serde_json::to_value(request)?))
+            .await?;
+        // Wait for response
+        loop {
+            if let Some(message) = inner.recv_from_read_stream().await {
+                println!("[CLIENT DEBUG] Protocol message received: {:?}", message);
+                match message {
+                    ProtocolMessage::Error(e) => {
+                        println!("[CLIENT DEBUG] Protocol error: {}", e);
+                        return Err(anyhow::anyhow!("Server error: {}", e.message));
+                    }
+                    ProtocolMessage::Data(data) => {
+                        match serde_json::from_value::<ListResourcesResult>(data) {
+                            Ok(result) => return Ok(result),
+                            Err(e) => {
+                                println!("[CLIENT DEBUG] Failed to deserialize message: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    _ => break, // Ignore other protocol messages
+                }
+            } else {
+                break;
+            }
+        }
+        Err(anyhow::anyhow!("No response received"))
     }
 
     pub async fn list_tools(&mut self, params: PaginatedRequestParams) -> Result<ListToolsResult> {
@@ -110,30 +181,34 @@ impl ClientSession {
         &mut self,
         request: impl serde::Serialize,
     ) -> Result<T> {
-        // Send request
-        self.write_stream
-            .send(SessionMessage {
-                message: serde_json::to_value(request)?,
-            })
-            .await?;
-
-        // Wait for response from self.read_stream
+        // Wrap request in ProtocolMessage::Data
+        let msg = ProtocolMessage::Data(serde_json::to_value(request)?);
+        // Send the request
+        {
+            let mut inner = self.inner.lock().await;
+            inner.send_to_write_stream(msg).await?;
+        }
+        // Wait for response
         loop {
-            if let Some(message) = self.read_stream.recv().await {
-                println!("[CLIENT DEBUG] Raw message received: {:?}", message);
-                // Check for error field in the response
-                if let Some(error_msg) = message.message.get("error").and_then(|e| e.as_str()) {
-                    return Err(anyhow::anyhow!("Server error: {}", error_msg));
-                }
-                match serde_json::from_value::<T>(message.message.clone()) {
-                    Ok(result) => return Ok(result),
-                    Err(e) => {
-                        println!(
-                            "[CLIENT DEBUG] Failed to deserialize message: {}\nMessage: {:?}",
-                            e, message.message
-                        );
-                        continue; // Skip non-matching messages
+            let message = {
+                let mut inner = self.inner.lock().await;
+                inner.recv_from_read_stream().await
+            };
+            if let Some(message) = message {
+                println!("[CLIENT DEBUG] Protocol message received: {:?}", message);
+                match message {
+                    ProtocolMessage::Error(e) => {
+                        println!("[CLIENT DEBUG] Protocol error: {}", e);
+                        return Err(anyhow::anyhow!("Server error: {}", e.message));
                     }
+                    ProtocolMessage::Data(data) => match serde_json::from_value::<T>(data) {
+                        Ok(result) => return Ok(result),
+                        Err(e) => {
+                            println!("[CLIENT DEBUG] Failed to deserialize message: {}", e);
+                            break;
+                        }
+                    },
+                    _ => break, // Ignore other protocol messages
                 }
             } else {
                 break;
@@ -143,16 +218,34 @@ impl ClientSession {
     }
 
     async fn handle_messages(&mut self) -> Result<()> {
+        println!("[CLIENT DEBUG] Starting message loop");
         loop {
-            if let Some(message) = self.read_stream.recv().await {
-                match serde_json::from_value::<Value>(message.message) {
-                    Ok(value) => match value.get("method").and_then(|m| m.as_str()) {
-                        Some("initialize") => self.handle_initialize(value).await?,
-                        Some("resources/list") => self.handle_list_resources(value).await?,
-                        Some("tools/list") => self.handle_list_tools(value).await?,
-                        _ => self.handle_notification(value).await?,
+            let message = {
+                let mut inner = self.inner.lock().await;
+                inner.recv_from_read_stream().await
+            };
+            if let Some(message) = message {
+                println!("[CLIENT DEBUG] Protocol message received: {:?}", message);
+                match message {
+                    ProtocolMessage::Data(data) => match serde_json::from_value::<Value>(data) {
+                        Ok(value) => match value.get("method").and_then(|m| m.as_str()) {
+                            Some("initialize") => self.handle_initialize(value).await?,
+                            Some("resources/list") => self.handle_list_resources(value).await?,
+                            Some("tools/list") => self.handle_list_tools(value).await?,
+                            Some(method) => self.handle_unknown_method(method, &value).await?,
+                            _ => self.handle_unknown_method("<missing>", &value).await?,
+                        },
+                        Err(_) => {
+                            self.handle_unknown_method("<parse error>", &serde_json::Value::Null)
+                                .await?
+                        }
                     },
-                    Err(_) => continue,
+                    ProtocolMessage::Error(err) => {
+                        println!("[CLIENT] Received protocol error: {}", err);
+                    }
+                    ProtocolMessage::Initialize(payload) => {
+                        println!("[CLIENT] Received handshake/init: {:?}", payload);
+                    }
                 }
             } else {
                 break;
@@ -180,6 +273,15 @@ impl ClientSession {
         // Handle notification message
         Ok(())
     }
+
+    async fn handle_unknown_method(
+        &mut self,
+        method: &str,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        println!("[CLIENT] Unknown method '{}', payload: {}", method, value);
+        Ok(())
+    }
 }
 
 pub struct ClientSessionGroup {
@@ -197,7 +299,9 @@ impl ClientSessionGroup {
         params: PaginatedRequestParams,
     ) -> Result<ListResourcesResult> {
         if let Some(session) = self.sessions.get(server_url) {
-            let mut guard = session.lock().await;
+            println!("[CLIENT DEBUG] Sending request: {:?}", params);
+            let guard = session.lock().await; //<- we have a deadlock here
+            println!("[CLIENT DEBUG] Sending request : lock acquired");
             guard.list_resources(params).await
         } else {
             Err(anyhow::anyhow!("No session for the given server_url"))
@@ -206,7 +310,7 @@ impl ClientSessionGroup {
 
     pub async fn list_resources(&mut self, server_url: &Url) -> Result<ListResourcesResult> {
         if let Some(session) = self.sessions.get(server_url) {
-            let mut guard = session.lock().await;
+            let guard = session.lock().await;
             guard.list_resources(Default::default()).await
         } else {
             Err(anyhow::anyhow!("No session for the given server_url"))
@@ -250,7 +354,7 @@ impl ClientSessionGroup {
 
     pub async fn connect_to_server(&mut self, server_url: Url) -> Result<()> {
         use std::sync::Arc;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+
         use tokio::net::TcpStream;
         let addr = match server_url.socket_addrs(|| None) {
             Ok(addrs) => addrs[0],
@@ -260,44 +364,35 @@ impl ClientSessionGroup {
         let (read_half, write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         let mut writer = BufWriter::new(write_half);
-        let (read_tx, read_rx): (mpsc::Sender<SessionMessage>, mpsc::Receiver<SessionMessage>) =
-            mpsc::channel(100);
-        let (write_tx, mut write_rx): (
-            mpsc::Sender<SessionMessage>,
-            mpsc::Receiver<SessionMessage>,
+        let (read_tx, read_rx): (
+            mpsc::Sender<ProtocolMessage>,
+            mpsc::Receiver<ProtocolMessage>,
         ) = mpsc::channel(100);
-        // Spawn read task
+        let (write_tx, mut write_rx): (
+            mpsc::Sender<ProtocolMessage>,
+            mpsc::Receiver<ProtocolMessage>,
+        ) = mpsc::channel(100);
+        // Spawn read task: socket -> read_tx
         tokio::spawn(async move {
-            let mut line = String::new();
             loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        println!("[CLIENT TCP DEBUG] Received line: {:?}", line);
-                        if let Ok(msg) = serde_json::from_str::<SessionMessage>(&line) {
-                            println!("[CLIENT TCP DEBUG] Parsed as SessionMessage: {:?}", msg);
-                            let _ = read_tx.send(msg).await;
-                        } else {
-                            println!(
-                                "[CLIENT TCP DEBUG] Failed to parse line as SessionMessage: {:?}",
-                                line
-                            );
-                        }
+                match ProtocolMessage::read_from_stream(&mut reader).await {
+                    Ok(msg) => {
+                        let _ = read_tx.send(msg).await;
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        println!("[CLIENT] TCP read task: error: {:?}", e);
+                        break;
+                    }
                 }
             }
+            println!("[CLIENT] TCP read task exiting");
         });
-        // Spawn write task
+        // Spawn write task: write_rx -> socket
         tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    println!("[CLIENT TCP DEBUG] Sending: {}", json);
-                    let _ = writer.write_all(json.as_bytes()).await;
-                    let _ = writer.write_all(b"\n").await;
-                    let _ = writer.flush().await;
-                    println!("[CLIENT TCP DEBUG] Flushed message to server");
+                if let Err(e) = msg.write_to_stream(&mut writer).await {
+                    println!("[CLIENT] TCP write task: error: {:?}", e);
+                    break;
                 }
             }
         });

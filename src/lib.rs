@@ -5,6 +5,7 @@ pub mod types;
 
 /// Main library file for MCP Rust SDK
 mod adapters;
+mod protocol;
 
 // Explicitly re-export only unique types to avoid ambiguous glob re-exports
 // (Clippy: ambiguous glob re-exports)
