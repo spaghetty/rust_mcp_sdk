@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -9,9 +8,9 @@ use serde_json::Value;
 use tokio::io::{BufReader, BufWriter};
 
 use crate::types::{
-    ClientCapabilities, Implementation, InitializeRequest, InitializeRequestParams,
+    Implementation,
     InitializeResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest, ListToolsResult,
-    PaginatedRequestParams, Resource, RootsCapability, SamplingCapability, ServerCapabilities,
+    PaginatedRequestParams, Resource, ServerCapabilities,
     Tool, ToolCallParams, ToolCallRequest, ToolResult,
 };
 use crate::Result;
