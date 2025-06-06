@@ -32,7 +32,7 @@ pub struct ServerSession {
     write_stream: mpsc::Sender<ProtocolMessage>,
     initialized: bool,
     client_params: Option<InitializeRequestParams>,
-    client_url: Url,
+    //client_url: Url,
     list_resources_handler: Option<Arc<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>,
 }
 
@@ -40,7 +40,7 @@ impl ServerSession {
     pub fn new(
         read_stream: mpsc::Receiver<ProtocolMessage>,
         write_stream: mpsc::Sender<ProtocolMessage>,
-        client_url: Url,
+        //client_url: Url,
         list_resources_handler: Option<Arc<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>,
         list_tools_handler: Option<
             Arc<
@@ -57,7 +57,7 @@ impl ServerSession {
             write_stream,
             initialized: false,
             client_params: None,
-            client_url,
+            //client_url,
             list_resources_handler,
             list_tools_handler,
             tool_handler: None,
@@ -129,7 +129,7 @@ impl ServerSession {
             write_stream: write_tx,
             initialized: false,
             client_params: None,
-            client_url: Url::parse("tcp://localhost").unwrap(),
+            //client_url: Url::parse("tcp://localhost").unwrap(),
             list_resources_handler,
             list_tools_handler,
             tool_handler,
@@ -145,7 +145,7 @@ impl ServerSession {
             write_stream,
             initialized: false,
             client_params: None,
-            client_url: Url::parse("http://localhost").unwrap(),
+            //client_url: Url::parse("http://localhost").unwrap(),
             list_resources_handler: None,
             list_tools_handler: None,
             tool_handler: None,
@@ -294,7 +294,7 @@ impl ServerSession {
         }
     }
 
-    async fn handle_unknown_method(&mut self, method: &str, value: Value) -> Result<()> {
+    async fn handle_unknown_method(&mut self, method: &str, _value: Value) -> Result<()> {
         println!(
             "[SERVER] handle_unknown_method called for method: {}",
             method
@@ -306,9 +306,7 @@ impl ServerSession {
         });
         self.send_response(error_response).await
     }
-}
 
-impl ServerSession {
     async fn handle_notification(&mut self, _notification: Value) -> Result<()> {
         // TODO: Implement notification handling
         Ok(())

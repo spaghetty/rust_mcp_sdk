@@ -42,6 +42,7 @@ impl std::fmt::Display for ProtocolError {
     }
 }
 
+/*
 /// Trait for handling protocol messages.
 pub trait ProtocolHandler {
     /// Handle a protocol message and return a response (if any) or an error.
@@ -50,7 +51,7 @@ pub trait ProtocolHandler {
         msg: ProtocolMessage,
     ) -> Result<Option<ProtocolMessage>, ProtocolError>;
 }
-
+*/
 impl ProtocolMessage {
     /// Reads a ProtocolMessage from a buffered async reader (expects one message per line).
     pub async fn read_from_stream<R: AsyncBufReadExt + Unpin>(

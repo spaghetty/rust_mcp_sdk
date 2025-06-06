@@ -8,10 +8,9 @@ use serde_json::Value;
 use tokio::io::{BufReader, BufWriter};
 
 use crate::types::{
-    Implementation,
-    InitializeResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest, ListToolsResult,
-    PaginatedRequestParams, Resource, ServerCapabilities,
-    Tool, ToolCallParams, ToolCallRequest, ToolResult,
+    Implementation, InitializeResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest,
+    ListToolsResult, PaginatedRequestParams, Resource, ServerCapabilities, Tool, ToolCallParams,
+    ToolCallRequest, ToolResult,
 };
 use crate::Result;
 
@@ -130,7 +129,10 @@ impl ClientSession {
     ) -> Result<ListResourcesResult> {
         let mut inner = self.inner.lock().await;
         let request = ListResourcesRequest::new(params);
-        println!("[CLIENT DEBUG] ListResources Sending request: {:?}", request);
+        println!(
+            "[CLIENT DEBUG] ListResources Sending request: {:?}",
+            request
+        );
         inner
             .send_to_write_stream(ProtocolMessage::Data(serde_json::to_value(request)?))
             .await?;
@@ -268,11 +270,12 @@ impl ClientSession {
         Ok(())
     }
 
+    /* TODO: missing implementation
     async fn handle_notification(&mut self, _value: Value) -> Result<()> {
         // Handle notification message
         Ok(())
     }
-
+    */
     async fn handle_unknown_method(
         &mut self,
         method: &str,

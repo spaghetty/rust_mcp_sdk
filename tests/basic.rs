@@ -20,7 +20,7 @@ async fn server_starts_and_accepts_connections() {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            let mut server = Server::new();
+            let server = Server::new();
             server.run(&addr.to_string()).await.unwrap();
         });
     });
@@ -50,7 +50,7 @@ async fn protocol_handshake_initialize() {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            let mut server = Server::new();
+            let server = Server::new();
             server.run(&addr.to_string()).await.unwrap();
         });
     });
@@ -79,7 +79,7 @@ async fn client_can_send_multiple_messages() {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            let mut server = Server::new();
+            let server = Server::new();
             server.run(&addr.to_string()).await.unwrap();
         });
     });
@@ -273,49 +273,47 @@ use tokio::time::timeout;
 
 #[tokio::test]
 async fn protocol_handler_unknown_method() {
-    let test_fut = async {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::TcpStream;
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async move {
-                let server = Server::new();
-                server.run(&addr.to_string()).await.unwrap();
-            });
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpStream;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let server = Server::new();
+            server.run(&addr.to_string()).await.unwrap();
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        // Connect as a raw TCP client and send an unknown method
-        let stream = TcpStream::connect(addr).await.unwrap();
-        let (read_half, mut write_half) = stream.into_split();
-        let mut reader = BufReader::new(read_half);
-        let unknown_msg =
-            serde_json::json!({"type": "unknown", "method": "unknown/method", "params": {}});
-        write_half
-            .write_all(serde_json::to_string(&unknown_msg).unwrap().as_bytes())
-            .await
-            .unwrap();
-        write_half.write_all(b"\n").await.unwrap();
-        let mut response = String::new();
-        println!("Response: {:?}", response);
-        let read_result = timeout(Duration::from_secs(5), reader.read_line(&mut response)).await;
-        match read_result {
-            Ok(Ok(_)) => {
-                // Successfully read a line
-            }
-            Ok(Err(_)) => {
-                println!("I've received an error"); //panic!("IO error while reading: {:?}", e);
-            }
-            Err(_) => {
-                //panic!("Timed out waiting for response from server");
-                println!("Timed out waiting for response from server");
-            }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Connect as a raw TCP client and send an unknown method
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let unknown_msg =
+        serde_json::json!({"type": "unknown", "method": "unknown/method", "params": {}});
+    write_half
+        .write_all(serde_json::to_string(&unknown_msg).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    let mut response = String::new();
+    println!("Response: {:?}", response);
+    let read_result = timeout(Duration::from_secs(5), reader.read_line(&mut response)).await;
+    match read_result {
+        Ok(Ok(_)) => {
+            // Successfully read a line
         }
-        println!("Response: {:?}", response);
-        assert!(response.contains("error") || response.contains("unknown"));
-    };
+        Ok(Err(_)) => {
+            println!("I've received an error"); //panic!("IO error while reading: {:?}", e);
+        }
+        Err(_) => {
+            //panic!("Timed out waiting for response from server");
+            println!("Timed out waiting for response from server");
+        }
+    }
+    println!("Response: {:?}", response);
+    assert!(response.contains("error") || response.contains("unknown"));
 }
 
 #[tokio::test]
