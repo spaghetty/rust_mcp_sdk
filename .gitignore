@@ -44,8 +44,6 @@ node_modules/
 .env.*
 
 # Ignore generated docs (if any)
-doc/
-/docs/book/
 
 # Ignore by default but allow docs/ for design docs
 !/docs/
