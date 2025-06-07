@@ -1,146 +1,116 @@
-//! Protocol layer for MCP Rust SDK
-// Handles message framing, protocol handshake, and error serialization.
+//! Defines the protocol layer for handling MCP message serialization and deserialization.
+//!
+//! This layer sits on top of the `NetworkAdapter` and provides a strongly-typed interface
+//! for sending and receiving MCP messages. It is responsible for all `serde_json`
+//! operations, keeping the client/server logic clean and focused on application tasks.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use crate::adapter::NetworkAdapter;
+use anyhow::Result;
+use serde::{de::DeserializeOwned, Serialize};
 
-/// Enum of all protocol-level messages.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "payload")]
-pub enum ProtocolMessage {
-    /// Initialization handshake
-    Initialize(InitializePayload),
-    /// Regular message
-    Data(Value),
-    /// Protocol error
-    Error(ProtocolError),
+/// A connection that handles MCP protocol logic over a generic `NetworkAdapter`.
+/// It wraps the adapter and provides methods for sending and receiving strongly-typed
+/// MCP messages.
+pub struct ProtocolConnection<A: NetworkAdapter> {
+    adapter: A,
 }
 
-/// Payload for initialization handshake.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct InitializePayload {
-    pub protocol_version: String,
-    pub client_info: Option<String>,
-    pub server_info: Option<String>,
-}
-
-/// Protocol error message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProtocolError {
-    pub code: u32,
-    pub message: String,
-}
-
-impl std::fmt::Display for ProtocolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "ProtocolError {{ code: {}, message: {} }}",
-            self.code, self.message
-        )
+impl<A: NetworkAdapter> ProtocolConnection<A> {
+    /// Creates a new `ProtocolConnection` that will use the given adapter for communication.
+    pub fn new(adapter: A) -> Self {
+        Self { adapter }
     }
-}
 
-/*
-/// Trait for handling protocol messages.
-pub trait ProtocolHandler {
-    /// Handle a protocol message and return a response (if any) or an error.
-    fn handle_message(
-        &mut self,
-        msg: ProtocolMessage,
-    ) -> Result<Option<ProtocolMessage>, ProtocolError>;
-}
-*/
-impl ProtocolMessage {
-    /// Reads a ProtocolMessage from a buffered async reader (expects one message per line).
-    pub async fn read_from_stream<R: AsyncBufReadExt + Unpin>(
-        reader: &mut R,
-    ) -> std::io::Result<ProtocolMessage> {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "stream closed",
-            ));
+    /// Serializes a message struct into a JSON string and sends it via the adapter.
+    pub async fn send_message<T: Serialize + Send + Sync>(&mut self, msg: T) -> Result<()> {
+        let json_string = serde_json::to_string(&msg)?;
+        self.adapter.send(&json_string).await
+    }
+
+    /// Receives a raw JSON string from the adapter and deserializes it into a message struct.
+    pub async fn recv_message<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
+        match self.adapter.recv().await? {
+            Some(json_string) => {
+                let msg = serde_json::from_str::<T>(&json_string)?;
+                Ok(Some(msg))
+            }
+            None => Ok(None), // Connection was closed
         }
-        let msg: ProtocolMessage = serde_json::from_str(&line)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        Ok(msg)
     }
-
-    /// Writes this ProtocolMessage to a buffered async writer (as a single line).
-    pub async fn write_to_stream<W: AsyncWriteExt + Unpin>(
-        &self,
-        writer: &mut W,
-    ) -> std::io::Result<()> {
-        let json = serde_json::to_string(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writer.write_all(json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await
-    }
-}
-
-/// Helper to construct a protocol handshake message.
-pub fn handshake_init(protocol_version: &str, client_info: Option<String>) -> ProtocolMessage {
-    ProtocolMessage::Initialize(InitializePayload {
-        protocol_version: protocol_version.to_string(),
-        client_info,
-        server_info: None,
-    })
-}
-
-/// Helper to construct a protocol handshake response.
-pub fn handshake_response(protocol_version: &str, server_info: Option<String>) -> ProtocolMessage {
-    ProtocolMessage::Initialize(InitializePayload {
-        protocol_version: protocol_version.to_string(),
-        client_info: None,
-        server_info,
-    })
-}
-
-/// Helper to construct a protocol error message.
-pub fn protocol_error(code: u32, message: &str) -> ProtocolMessage {
-    ProtocolMessage::Error(ProtocolError {
-        code,
-        message: message.to_string(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{CallToolParams, Request, RequestId, Response};
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
 
-    #[test]
-    fn test_serialize_deserialize_initialize() {
-        let msg = ProtocolMessage::Initialize(InitializePayload {
-            protocol_version: "1.0".to_string(),
-            client_info: Some("client-x".to_string()),
-            server_info: None,
-        });
-        let json = serde_json::to_string(&msg).unwrap();
-        let deserialized: ProtocolMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
+    /// A mock adapter that uses an in-memory queue instead of a real network.
+    /// This allows us to test the `ProtocolConnection` without any I/O.
+    struct InMemoryAdapter {
+        // We use a Mutex here to allow for safe concurrent access,
+        // which is a good practice even in single-threaded tests for async code.
+        buffer: Mutex<VecDeque<String>>,
     }
 
-    #[test]
-    fn test_serialize_deserialize_error() {
-        let err = ProtocolMessage::Error(ProtocolError {
-            code: 42,
-            message: "bad stuff".to_string(),
-        });
-        let json = serde_json::to_string(&err).unwrap();
-        let deserialized: ProtocolMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(err, deserialized);
+    impl InMemoryAdapter {
+        fn new() -> Self {
+            Self {
+                buffer: Mutex::new(VecDeque::new()),
+            }
+        }
     }
 
-    #[test]
-    fn test_serialize_deserialize_data() {
-        let data = ProtocolMessage::Data(serde_json::json!({"foo": 123}));
-        let json = serde_json::to_string(&data).unwrap();
-        let deserialized: ProtocolMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(data, deserialized);
+    #[async_trait]
+    impl NetworkAdapter for InMemoryAdapter {
+        async fn send(&mut self, msg: &str) -> Result<()> {
+            self.buffer.lock().unwrap().push_back(msg.to_string());
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Option<String>> {
+            Ok(self.buffer.lock().unwrap().pop_front())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_protocol_connection_send_recv() {
+        // 1. Setup
+        let adapter = InMemoryAdapter::new();
+        let mut proto_conn = ProtocolConnection::new(adapter);
+
+        // 2. Create a typed message (a request to call a tool)
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Num(123),
+            method: "tools/call".to_string(),
+            params: CallToolParams {
+                name: "test-tool".to_string(),
+                arguments: json!({ "arg1": "value1" }),
+            },
+        };
+
+        // 3. Send the message. This will serialize it and put it in the mock adapter's buffer.
+        proto_conn.send_message(request.clone()).await.unwrap();
+
+        // 4. Receive the message. This will take it from the buffer and deserialize it.
+        let received_request: Option<Request<CallToolParams>> =
+            proto_conn.recv_message().await.unwrap();
+
+        // 5. Assert that the received message is identical to the one we sent.
+        assert_eq!(Some(request), received_request);
+    }
+
+    #[tokio::test]
+    async fn test_protocol_connection_receives_none_on_empty() {
+        let adapter = InMemoryAdapter::new();
+        let mut proto_conn = ProtocolConnection::new(adapter);
+
+        // Receive from an empty buffer should yield None, simulating a closed connection.
+        let received: Option<Response<()>> = proto_conn.recv_message().await.unwrap();
+        assert!(received.is_none());
     }
 }

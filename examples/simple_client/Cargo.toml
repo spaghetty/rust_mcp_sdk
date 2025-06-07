@@ -1,0 +1,13 @@
+[package]
+name = "simple-client-example"
+version = "0.1.0"
+edition = "2021"
+publish = false  # This is an example, not meant to be published
+
+[dependencies]
+anyhow = "1"
+# Our main SDK library, referenced via a path dependency.
+mcp-sdk = { path = "../.." }
+serde_json = "1.0"
+# Dependencies for the example application.
+tokio = { version = "1", features = ["full"] }

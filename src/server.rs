@@ -1,402 +1,319 @@
-use anyhow::anyhow;
-use std::collections::HashMap;
+//! Defines the high-level MCP server.
+//!
+//! This module provides an ergonomic API for building an MCP server using a builder pattern.
+//! It handles listening for connections, dispatching requests to registered handlers,
+//! and managing the connection lifecycle.
+
+use crate::adapter::NetworkAdapter;
+use crate::protocol::ProtocolConnection;
+use crate::types::{
+    CallToolParams, CallToolResult, ErrorData, ErrorResponse, Implementation,
+    InitializeRequestParams, InitializeResult, Request, RequestId, Response, ServerCapabilities,
+    Tool, LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
+};
+use crate::TcpAdapter;
+use anyhow::Result;
+use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+use tokio::net::TcpListener;
 
-use crate::protocol::{InitializePayload, ProtocolMessage};
-use serde_json::Value;
-use url::Url;
+// --- Handler Type Definitions ---
+type ListToolsHandler =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Vec<Tool>>> + Send>> + Send + Sync>;
+type CallToolHandler = Arc<
+    dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = Result<CallToolResult>> + Send>>
+        + Send
+        + Sync,
+>;
 
-use crate::types::ToolResult;
-use crate::types::*;
-use crate::Result;
-
-pub struct ServerSession {
-    tool_handler: Option<
-        Arc<Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>>,
-    >,
-    list_tools_handler: Option<
-        Arc<
-            Box<
-                dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ListToolsResult>> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
-    >,
-    read_stream: mpsc::Receiver<ProtocolMessage>,
-    write_stream: mpsc::Sender<ProtocolMessage>,
-    initialized: bool,
-    client_params: Option<InitializeRequestParams>,
-    //client_url: Url,
-    list_resources_handler: Option<Arc<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>,
-}
-
-impl ServerSession {
-    pub fn new(
-        read_stream: mpsc::Receiver<ProtocolMessage>,
-        write_stream: mpsc::Sender<ProtocolMessage>,
-        //client_url: Url,
-        list_resources_handler: Option<Arc<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>,
-        list_tools_handler: Option<
-            Arc<
-                Box<
-                    dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ListToolsResult>> + Send>>
-                        + Send
-                        + Sync,
-                >,
-            >,
-        >,
-    ) -> Self {
-        Self {
-            read_stream,
-            write_stream,
-            initialized: false,
-            client_params: None,
-            //client_url,
-            list_resources_handler,
-            list_tools_handler,
-            tool_handler: None,
-        }
-    }
-
-    pub fn from_socket(
-        socket: TcpStream,
-        list_resources_handler: Option<Arc<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>,
-        list_tools_handler: Option<
-            Arc<
-                Box<
-                    dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ListToolsResult>> + Send>>
-                        + Send
-                        + Sync,
-                >,
-            >,
-        >,
-        tool_handler: Option<
-            Arc<Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>>,
-        >,
-    ) -> Self {
-        use tokio::io::{split, BufReader, BufWriter};
-        let (read_half, write_half) = split(socket);
-        let mut reader = BufReader::new(read_half);
-        let writer = BufWriter::new(write_half);
-        let (write_tx, mut write_rx) = mpsc::channel::<ProtocolMessage>(16);
-        let (read_tx, read_rx) = mpsc::channel(16);
-
-        // Spawn read task: socket -> read_tx
-        tokio::spawn(async move {
-            loop {
-                match ProtocolMessage::read_from_stream(&mut reader).await {
-                    Ok(msg) => {
-                        let _ = read_tx.send(msg).await;
-                    }
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::InvalidData {
-                            let error_msg =
-                                ProtocolMessage::Error(crate::protocol::ProtocolError {
-                                    code: 400,
-                                    message: format!("Malformed message: {}", e),
-                                });
-                            let x = read_tx.send(error_msg).await;
-                            println!("[SERVER] TCP read task: protocol error: {:?}", x);
-                        } else {
-                            println!("[SERVER] TCP read task: io error: {:?}", e);
-                            break;
-                        }
-                    }
-                }
-            }
-            println!("[SERVER] TCP read task exiting");
-        });
-
-        // Spawn write task: write_rx -> socket
-        tokio::spawn(async move {
-            let mut writer = writer;
-            while let Some(message) = write_rx.recv().await {
-                if let Err(e) = message.write_to_stream(&mut writer).await {
-                    println!("[SERVER] TCP write task: error: {:?}", e);
-                    break;
-                }
-            }
-        });
-
-        Self {
-            read_stream: read_rx,
-            write_stream: write_tx,
-            initialized: false,
-            client_params: None,
-            //client_url: Url::parse("tcp://localhost").unwrap(),
-            list_resources_handler,
-            list_tools_handler,
-            tool_handler,
-        }
-    }
-
-    pub fn with_streams(
-        read_stream: mpsc::Receiver<ProtocolMessage>,
-        write_stream: mpsc::Sender<ProtocolMessage>,
-    ) -> Self {
-        Self {
-            read_stream,
-            write_stream,
-            initialized: false,
-            client_params: None,
-            //client_url: Url::parse("http://localhost").unwrap(),
-            list_resources_handler: None,
-            list_tools_handler: None,
-            tool_handler: None,
-        }
-    }
-
-    pub async fn handle_messages(&mut self) -> Result<()> {
-        println!("[SERVER] handle_messages: starting message loop");
-        while let Some(msg) = self.read_stream.recv().await {
-            println!("[SERVER] handle_messages: received message: {:?}", msg);
-            match msg {
-                ProtocolMessage::Initialize(_payload) => {
-                    // Handle handshake or re-initialization if needed
-                    if !self.initialized {
-                        self.initialized = true;
-                        // Send handshake response
-                        let response = ProtocolMessage::Initialize(InitializePayload {
-                            protocol_version: "1.0".to_string(),
-                            client_info: None,
-                            server_info: Some("mcp-rust-server".to_string()),
-                        });
-                        self.write_stream.send(response).await?;
-                        continue;
-                    }
-                }
-                ProtocolMessage::Data(data) => match data.get("method").and_then(|m| m.as_str()) {
-                    Some("initialize") => self.handle_initialize(data).await?,
-                    Some("resources/list") => self.handle_list_resources(data).await?,
-                    Some("tools/list") => self.handle_list_tools(data).await?,
-                    Some("tool/call") => self.handle_call_tool(data).await?,
-                    //Some(method) => self.handle_unknown_method(method, data).await?,
-                    _ => self.handle_unknown_method("<unknown>", data).await?,
-                },
-                ProtocolMessage::Error(err) => {
-                    println!("[SERVER] Received error message: {}", err);
-                    self.handle_unknown_method(
-                        &err.code.to_string().to_ascii_uppercase(),
-                        serde_json::Value::String(err.message),
-                    )
-                    .await?;
-                }
-            }
-        }
-        println!("[SERVER] handle_messages: message loop exited");
-        Ok(())
-    }
-
-    async fn handle_initialize(&mut self, request: Value) -> Result<()> {
-        let params = request
-            .get("params")
-            .ok_or_else(|| anyhow::anyhow!("Missing params"))?;
-        let params: InitializeRequestParams = serde_json::from_value(params.clone())?;
-
-        self.client_params = Some(params.clone());
-        self.initialized = true;
-
-        let response = InitializeResult {
-            protocol_version: "1.0".to_string(),
-            capabilities: ServerCapabilities {
-                sampling: Some(SamplingCapability {
-                    sample_size: 100,
-                    extra: HashMap::new(),
-                }),
-                roots: Some(RootsCapability {
-                    list_changed: true,
-                    extra: HashMap::new(),
-                }),
-                extra: HashMap::new(),
-            },
-            server_info: Implementation {
-                name: "mcp-rust-server".to_string(),
-                version: "0.1.0".to_string(),
-            },
-            instructions: Some("Welcome to the MCP Rust server".to_string()),
-        };
-
-        self.send_response(response).await
-    }
-
-    async fn handle_list_resources(&mut self, request: Value) -> Result<()> {
-        println!("[SERVER] handle_list_resources called");
-        let params = request
-            .get("params")
-            .ok_or_else(|| anyhow::anyhow!("Missing params"))?;
-        let params: PaginatedRequestParams = serde_json::from_value(params.clone())?;
-
-        let resources = if let Some(handler) = &self.list_resources_handler {
-            handler(request.clone())
-        } else {
-            vec![]
-        };
-        let response = ListResourcesResult {
-            resources,
-            cursor: params.cursor,
-        };
-
-        self.send_response(response).await
-    }
-
-    async fn handle_list_tools(&mut self, request: Value) -> Result<()> {
-        if let Some(handler) = &self.list_tools_handler {
-            let fut = handler(request.clone());
-            match fut.await {
-                Ok(result) => {
-                    let response = serde_json::to_value(result)?;
-                    self.send_response(response).await
-                }
-                Err(e) => {
-                    let error_response = serde_json::json!({
-                        "error": format!("tools/list handler error: {}", e)
-                    });
-                    self.send_response(error_response).await
-                }
-            }
-        } else {
-            let error_response = serde_json::json!({
-                "error": "No tools/list handler registered"
-            });
-            self.send_response(error_response).await
-        }
-    }
-
-    async fn handle_call_tool(&mut self, request: Value) -> Result<()> {
-        // This expects request["params"] to have "name" and "arguments"
-        let params = request
-            .get("params")
-            .ok_or_else(|| anyhow::anyhow!("Missing params"))?;
-        let params: crate::types::ToolCallParams = serde_json::from_value(params.clone())?;
-        let result = if let Some(handler) = &self.tool_handler {
-            handler(params.name, params.arguments)
-        } else {
-            Err(anyhow!("No tool handler registered"))
-        };
-
-        // Respond with the result
-        // (You may need to adapt this to your protocol)
-        match result {
-            Ok(tool_result) => self.send_response(tool_result).await,
-            Err(e) => {
-                self.send_response(ToolResult {
-                    result: None,
-                    error: Some(e.to_string()),
-                })
-                .await
-            }
-        }
-    }
-
-    async fn handle_unknown_method(&mut self, method: &str, _value: Value) -> Result<()> {
-        println!(
-            "[SERVER] handle_unknown_method called for method: {}",
-            method
-        );
-        // Send an error response for unknown/unimplemented methods
-        let error_message = format!("Method '{}' not implemented", method);
-        let error_response = serde_json::json!({
-            "error": error_message
-        });
-        self.send_response(error_response).await
-    }
-
-    async fn handle_notification(&mut self, _notification: Value) -> Result<()> {
-        // TODO: Implement notification handling
-        Ok(())
-    }
-
-    async fn send_response<T: serde::Serialize>(&mut self, response: T) -> Result<()> {
-        let message = ProtocolMessage::Data(serde_json::to_value(response)?);
-        println!("[SERVER] send_response: {:?}", message);
-        // Only check for error if Data variant
-        if let ProtocolMessage::Data(ref value) = message {
-            if value.get("error").is_some() {
-                println!("[SERVER] Sending ERROR response to client: {:?}", message);
-            }
-        }
-        self.write_stream.send(message).await?;
-        Ok(())
-    }
-}
-
+/// A high-level server for handling MCP requests.
+#[derive(Default)]
 pub struct Server {
-    _sessions: Arc<Mutex<HashMap<Url, Arc<tokio::sync::Mutex<ServerSession>>>>>,
-    pub list_resources_handler: Option<Arc<Box<dyn Fn(Value) -> Vec<Resource> + Send + Sync>>>,
-    pub list_tools_handler: Option<
-        Arc<
-            Box<
-                dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<ListToolsResult>> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
-    >,
-    pub tool_handler: Option<
-        Arc<Box<dyn Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync>>,
-    >,
+    name: String,
+    list_tools_handler: Option<ListToolsHandler>,
+    call_tool_handler: Option<CallToolHandler>,
 }
 
 impl Server {
-    pub fn add_tool_handler<F>(&mut self, handler: F)
-    where
-        F: Fn(String, HashMap<String, String>) -> Result<ToolResult> + 'static + Send + Sync,
-    {
-        self.tool_handler = Some(Arc::new(Box::new(handler)));
-    }
-
-    pub fn list_tools<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(Value) -> Fut + 'static + Send + Sync,
-        Fut: std::future::Future<Output = Result<ListToolsResult>> + Send + 'static,
-    {
-        self.list_tools_handler = Some(Arc::new(Box::new(move |value| {
-            Box::pin(handler(value))
-                as Pin<Box<dyn Future<Output = Result<ListToolsResult>> + Send>>
-        })));
-    }
-
-    pub fn list_resources<F>(&mut self, handler: F)
-    where
-        F: Fn(Value) -> Vec<Resource> + 'static + Send + Sync,
-    {
-        self.list_resources_handler = Some(Arc::new(Box::new(handler)));
-    }
-
-    pub fn new() -> Self {
-        Self {
-            _sessions: Arc::new(Mutex::new(HashMap::new())),
-            list_resources_handler: None,
-            list_tools_handler: None,
-            tool_handler: None,
+    /// Creates a new `Server`.
+    pub fn new(name: &str) -> Self {
+        Server {
+            name: name.to_string(),
+            ..Default::default()
         }
     }
 
-    pub async fn run(&self, bind_addr: &str) -> Result<()> {
-        use tokio::net::TcpListener;
-        let listener = TcpListener::bind(bind_addr).await?;
-        println!("Server listening on {}", bind_addr);
+    /// Registers the handler for `tools/list` requests.
+    pub fn on_list_tools<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Tool>>> + Send + 'static,
+    {
+        self.list_tools_handler = Some(Arc::new(move || Box::pin(handler())));
+        self
+    }
+
+    /// Registers the handler for `tools/call` requests.
+    pub fn on_call_tool<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(String, Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<CallToolResult>> + Send + 'static,
+    {
+        self.call_tool_handler = Some(Arc::new(move |name, args| Box::pin(handler(name, args))));
+        self
+    }
+
+    /// Starts the server and listens for incoming TCP connections.
+    pub async fn listen(self, addr: &str) -> Result<()> {
+        let listener = TcpListener::bind(addr).await?;
+        println!("{} listening on {}", self.name, addr);
+        let server = Arc::new(self);
+
         loop {
-            let (socket, addr) = listener.accept().await?;
-            println!("New MCP connection from {:?}", addr);
-            let list_resources_handler = self.list_resources_handler.clone();
-            let list_tools_handler = self.list_tools_handler.clone();
-            let tool_handler = self.tool_handler.clone();
+            let (stream, client_addr) = listener.accept().await?;
+            println!("Accepted connection from: {}", client_addr);
+            let server_clone = Arc::clone(&server);
             tokio::spawn(async move {
-                let mut session = ServerSession::from_socket(
-                    socket,
-                    list_resources_handler,
-                    list_tools_handler,
-                    tool_handler,
-                );
-                let _ = session.handle_messages().await;
+                let adapter = TcpAdapter::new(stream);
+                let mut conn = ProtocolConnection::new(adapter);
+                if let Err(e) = server_clone.handle_connection(&mut conn).await {
+                    eprintln!("Error handling connection from {}: {}", client_addr, e);
+                }
             });
+        }
+    }
+
+    /// Handles a single client connection, starting with the initialize handshake.
+    /// This method is generic over any type that implements `NetworkAdapter`.
+    pub async fn handle_connection<A: NetworkAdapter>(
+        &self,
+        conn: &mut ProtocolConnection<A>,
+    ) -> Result<()> {
+        // First, robustly handle the initialize handshake.
+        if let Some(first_req_val) = conn.recv_message::<Value>().await? {
+            if let Some(method) = first_req_val.get("method").and_then(Value::as_str) {
+                if method == "initialize" {
+                    let init_req: Request<InitializeRequestParams> =
+                        serde_json::from_value(first_req_val)?;
+                    println!(
+                        "Received initialize from: {:?}",
+                        init_req.params.client_info
+                    );
+                    let init_response = Response {
+                        jsonrpc: "2.0".to_string(),
+                        id: init_req.id,
+                        result: InitializeResult {
+                            protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
+                            server_info: Implementation {
+                                name: self.name.clone(),
+                                version: env!("CARGO_PKG_VERSION").to_string(),
+                            },
+                            capabilities: ServerCapabilities::default(),
+                        },
+                    };
+                    conn.send_message(init_response).await?;
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "First message was not initialize, but {}",
+                        method
+                    ));
+                }
+            } else {
+                return Err(anyhow::anyhow!("First message was not a valid request."));
+            }
+        } else {
+            return Ok(()); // Connection closed immediately, which is fine.
+        }
+
+        // After successful handshake, enter the main request dispatch loop.
+        while let Some(req) = conn.recv_message::<Request<Value>>().await? {
+            match req.method.as_str() {
+                "tools/list" => {
+                    if let Some(handler) = &self.list_tools_handler {
+                        let result = (handler)().await?;
+                        let response = Response {
+                            id: req.id,
+                            jsonrpc: "2.0".to_string(),
+                            result,
+                        };
+                        conn.send_message(response).await?;
+                    } else {
+                        self.send_error(
+                            conn,
+                            req.id,
+                            METHOD_NOT_FOUND,
+                            "tools/list handler not registered",
+                        )
+                        .await?;
+                    }
+                }
+                "tools/call" => {
+                    if let Some(handler) = &self.call_tool_handler {
+                        let params: CallToolParams = serde_json::from_value(req.params)?;
+                        let result = (handler)(params.name, params.arguments).await?;
+                        let response = Response {
+                            id: req.id,
+                            jsonrpc: "2.0".to_string(),
+                            result,
+                        };
+                        conn.send_message(response).await?;
+                    } else {
+                        self.send_error(
+                            conn,
+                            req.id,
+                            METHOD_NOT_FOUND,
+                            "tools/call handler not registered",
+                        )
+                        .await?;
+                    }
+                }
+                unhandled_method => {
+                    self.send_error(
+                        conn,
+                        req.id,
+                        METHOD_NOT_FOUND,
+                        &format!("Method '{}' not found", unhandled_method),
+                    )
+                    .await?;
+                }
+            };
+        }
+        Ok(())
+    }
+
+    /// Helper to send a JSON-RPC error response.
+    async fn send_error<A: NetworkAdapter>(
+        &self,
+        conn: &mut ProtocolConnection<A>,
+        id: RequestId,
+        code: i32,
+        message: &str,
+    ) -> Result<()> {
+        let error_response = ErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            error: ErrorData {
+                code,
+                message: message.to_string(),
+            },
+        };
+        conn.send_message(error_response).await
+    }
+}
+
+// --- Unit Tests ---
+// These tests verify the server's internal logic in isolation.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::NetworkAdapter;
+    use crate::types::JSONRPCResponse;
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    // --- Mock Infrastructure for Testing ---
+
+    /// A mock adapter that uses an in-memory queue.
+    #[derive(Default, Clone)]
+    struct MockAdapter {
+        incoming: Arc<Mutex<VecDeque<String>>>,
+        outgoing: Arc<Mutex<VecDeque<String>>>,
+    }
+
+    impl MockAdapter {
+        /// Helper method for tests to queue up a message as if it were from a client.
+        fn push_incoming(&self, msg: String) {
+            self.incoming.lock().unwrap().push_back(msg);
+        }
+    }
+
+    #[async_trait]
+    impl NetworkAdapter for MockAdapter {
+        async fn send(&mut self, msg: &str) -> Result<()> {
+            self.outgoing.lock().unwrap().push_back(msg.to_string());
+            Ok(())
+        }
+        async fn recv(&mut self) -> Result<Option<String>> {
+            Ok(self.incoming.lock().unwrap().pop_front())
+        }
+    }
+
+    // Helper to create a mock connection and a way to interact with it.
+    fn setup_mock_connection() -> (
+        ProtocolConnection<MockAdapter>,
+        MockAdapter,
+        Arc<Mutex<VecDeque<String>>>,
+    ) {
+        let adapter = MockAdapter::default();
+        let test_adapter_handle = adapter.clone();
+        let outgoing_buffer = Arc::clone(&adapter.outgoing);
+        let conn = ProtocolConnection::new(adapter);
+        (conn, test_adapter_handle, outgoing_buffer)
+    }
+
+    // --- Test Cases ---
+
+    #[tokio::test]
+    async fn test_handler_registration() {
+        // This test ensures that the builder pattern correctly registers handlers.
+        let server = Server::new("test")
+            .on_list_tools(|| async { Ok(vec![]) })
+            .on_call_tool(|_, _| async {
+                Ok(CallToolResult {
+                    content: vec![],
+                    is_error: false,
+                })
+            });
+
+        assert!(server.list_tools_handler.is_some());
+        assert!(server.call_tool_handler.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_to_list_tools_handler() {
+        // This test verifies that a "tools/list" request is correctly dispatched.
+        let server = Arc::new(Server::new("test").on_list_tools(|| async {
+            Ok(vec![Tool {
+                name: "test-tool-from-handler".to_string(),
+                description: None,
+                input_schema: json!({}),
+                annotations: None,
+            }])
+        }));
+
+        let (mut conn, adapter_handle, outgoing) = setup_mock_connection();
+
+        // Simulate client sending an initialize request.
+        let init_req = json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": { "protocolVersion": "test", "clientInfo": {"name": "test", "version": "0"}, "capabilities": {} }
+        });
+        adapter_handle.push_incoming(serde_json::to_string(&init_req).unwrap());
+
+        // Simulate client sending a tools/list request.
+        let list_req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        adapter_handle.push_incoming(serde_json::to_string(&list_req).unwrap());
+
+        // Run the handler for the connection.
+        server.handle_connection(&mut conn).await.unwrap();
+
+        // Check the server's response.
+        let responses = outgoing.lock().unwrap();
+        assert_eq!(responses.len(), 2); // Init response + list response
+
+        let list_response_str = responses.get(1).unwrap();
+        let list_response: JSONRPCResponse<Vec<Tool>> =
+            serde_json::from_str(list_response_str).unwrap();
+
+        if let JSONRPCResponse::Success(res) = list_response {
+            assert_eq!(res.result.len(), 1);
+            assert_eq!(res.result[0].name, "test-tool-from-handler");
+        } else {
+            panic!("Expected a successful response for tools/list");
         }
     }
 }
