@@ -30,7 +30,7 @@ The MCP Rust SDK provides a robust, async, and type-safe implementation of the M
 The SDK is structured into four primary layers, each with clear responsibilities and file mappings. **This document is the reference for all future design and testing decisions.**
 
 1. **Network Adapter Layer**
-   - **Files:** `src/adapter_client_tcp.rs`, `src/adapter_server_tcp.rs`, (future: `src/adapter_client_http.rs`, etc.)
+   - **Files:** `src/adapter.rs`, (future: `src/adapter_http.rs`, etc.)
    - **Responsibilities:**
      - Handles raw transport (TCP, HTTP, etc.), async IO, message framing.
      - Implements a common `NetworkAdapter` trait for pluggability.
@@ -60,10 +60,16 @@ The SDK is structured into four primary layers, each with clear responsibilities
 
 ```rust
 // In src/adapter_server_tcp.rs (similar for client)
-#[async_trait::async_trait]
-pub trait NetworkAdapter {
-    async fn send(&mut self, msg: &str) -> anyhow::Result<()>;
-    async fn recv(&mut self) -> anyhow::Result<Option<String>>;
+#[async_trait]
+pub trait NetworkAdapter: Send + Sync {
+    /// Sends a single, complete message string over the transport.
+    /// A newline character will be appended to frame the message.
+    async fn send(&mut self, msg: &str) -> Result<()>;
+
+    /// Receives a single, complete message string from the transport.
+    /// This should handle reading until a newline character is found.
+    /// Returns `Ok(None)` if the connection is closed gracefully.
+    async fn recv(&mut self) -> Result<Option<String>>;
 }
 ```
 - Each adapter implements this trait for its transport.
@@ -74,16 +80,13 @@ pub trait NetworkAdapter {
 ```
 / rust-sdk
   /src
-    adapter_client_tcp.rs    # TCP-specific client network logic
-    adapter_server_tcp.rs    # TCP-specific server network logic
-    adapter_client_http.rs   # (future) HTTP client
-    adapter_server_http.rs   # (future) HTTP server
-    routing.rs               # Routing logic, protocol dispatch
+    adapter_tcp.rs           # TCP-specific client&server network logic
+    adapter_http.rs          # (future) HTTP client & server
     protocol.rs              # Protocol message (de)serialization, validation
     types.rs                 # Data structures and protocol types
     client.rs                # High-level client API (uses adapters)
     server.rs                # High-level server API (uses adapters)
-    common.rs                # Shared helpers/utilities
+    lib.rs                   # standar lib entrypoint
   /examples
     simple_client.rs
     simple_resource.rs
@@ -135,15 +138,15 @@ pub trait NetworkAdapter {
 ### Client API (`client.rs`)
 
 ```rust
-impl ClientSessionGroup {
-    pub async fn connect_to_server(&mut self, server_url: Url) -> Result<()>;
-    pub async fn list_resources(&mut self, server_url: &Url) -> Result<ListResourcesResult>;
-    pub async fn list_tools(&mut self, server_url: &Url, params: PaginatedRequestParams) -> Result<ListToolsResult>;
-    pub async fn call_tool(&mut self, server_url: &Url, name: String, arguments: HashMap<String, String>) -> Result<ToolResult>;
+    pub async fn connect(addr: &str) -> Result<Self>;
+    pub async fn list_resources(&self) -> Result<Vec<Resource>>;
+    pub async fn read_resource(&self, uri: String) -> Result<ReadResourceResult>;
+    pub async fn list_tools(&self) -> Result<Vec<Tool>>;
+    pub async fn call_tool(&self, name: String, arguments: Value) -> Result<CallToolResult>;
 }
 ```
 
-- **Session Management:** Multiple connections, each handled as a session.
+- **Session Management:** Multiple connections, each handled as a session (future).
 - **Request Methods:** List resources, list tools, call tool (with arguments).
 - **Async:** All methods are async and return `Result<T>`.
 
@@ -151,12 +154,24 @@ impl ClientSessionGroup {
 
 ```rust
 impl Server {
-    pub fn new() -> Self;
-    pub fn list_resources<F>(&mut self, handler: F)
-        where F: Fn(Value) -> Vec<Resource> + Send + Sync + 'static;
-    pub fn register_tool_handler<F>(&mut self, handler: F)
-        where F: Fn(String, HashMap<String, String>) -> Result<ToolResult> + Send + Sync + 'static;
-    pub async fn run(&self, bind_addr: &str) -> Result<()>;
+    pub fn new(name: &str) -> Self;
+    pub fn on_list_resources<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Resource>>> + Send + 'static;
+    pub fn on_read_resource<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ReadResourceResult>> + Send + 'static;
+    pub fn on_list_tools<F, Fut>(mut self, handler: F) -> Self
+        where
+            F: Fn() -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = Result<Vec<Tool>>> + Send + 'static;
+    pub fn on_call_tool<F, Fut>(mut self, handler: F) -> Self
+        where
+            F: Fn(String, Value) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = Result<CallToolResult>> + Send + 'static;
+    pub async fn listen(self, addr: &str) -> Result<()>;
 }
 ```
 
@@ -165,8 +180,8 @@ impl Server {
 
 ### Types & Data Structures (`types.rs`)
 
-- **Requests:** `ListResourcesRequest`, `ListToolsRequest`, `ToolCallRequest`, etc.
-- **Responses:** `ListResourcesResult`, `ListToolsResult`, `ToolResult`, etc.
+- **Requests:** .
+- **Responses:**  `CallToolResult`, etc.
 - **Core Types:** `Resource`, `Tool`, `PaginatedRequestParams`, etc.
 
 ---

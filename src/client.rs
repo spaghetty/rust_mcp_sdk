@@ -1,324 +1,289 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use url::Url;
+//! Defines the high-level MCP client.
+//!
+//! This module provides a simple, ergonomic API for connecting to and interacting with
+//! an MCP server. It handles connection, initialization, request/response lifecycle,
+//! and error handling, abstracting away the underlying protocol and transport details.
 
-use serde_json::Value;
-
+use crate::adapter::TcpAdapter;
+use crate::protocol::ProtocolConnection;
 use crate::types::{
-    ClientCapabilities, Implementation, InitializeRequest, InitializeRequestParams,
-    InitializeResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest, ListToolsResult,
-    PaginatedRequestParams, Resource, RootsCapability, SamplingCapability, Tool, ToolCallParams,
-    ToolCallRequest, ToolResult,
+    CallToolParams, CallToolResult, ClientCapabilities, Implementation, InitializeRequestParams,
+    InitializeResult, JSONRPCResponse, ListResourcesParams, ListToolsParams, ReadResourceParams,
+    ReadResourceResult, Request, RequestId, Resource, Tool, LATEST_PROTOCOL_VERSION,
 };
-use crate::Result;
+use anyhow::Result;
+use serde_json::Value;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-pub struct ClientSession {
-    read_stream: mpsc::Receiver<SessionMessage>,
-    write_stream: mpsc::Sender<SessionMessage>,
-    client_info: Implementation,
-    _sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
-    _list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
-    _logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
+/// A high-level client for interacting with an MCP server.
+pub struct Client {
+    connection: tokio::sync::Mutex<ProtocolConnection<TcpAdapter>>,
+    next_request_id: AtomicI64,
+    // We can store server capabilities here later.
+    // server_capabilities: ServerCapabilities,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SessionMessage {
-    pub message: Value,
-}
+impl Client {
+    /// Connects to an MCP server and performs the initialization handshake.
+    pub async fn connect(addr: &str) -> Result<Self> {
+        let adapter = TcpAdapter::connect(addr).await?;
+        let mut connection = ProtocolConnection::new(adapter);
 
-#[async_trait::async_trait]
-pub trait SamplingCallback {
-    async fn on_sampling(&self, params: &Value) -> Result<()>;
-}
-
-#[async_trait::async_trait]
-pub trait ListRootsCallback {
-    async fn on_list_roots(&self, params: &Value) -> Result<()>;
-}
-
-#[async_trait::async_trait]
-pub trait LoggingCallback {
-    async fn on_log(&self, params: &Value) -> Result<()>;
-}
-
-impl ClientSession {
-    pub fn new(
-        read_stream: mpsc::Receiver<SessionMessage>,
-        write_stream: mpsc::Sender<SessionMessage>,
-        client_info: Implementation,
-        sampling_callback: Option<Box<dyn SamplingCallback + Send + Sync>>,
-        list_roots_callback: Option<Box<dyn ListRootsCallback + Send + Sync>>,
-        logging_callback: Option<Box<dyn LoggingCallback + Send + Sync>>,
-    ) -> Self {
-        Self {
-            read_stream,
-            write_stream,
-            client_info,
-            _sampling_callback: sampling_callback,
-            _list_roots_callback: list_roots_callback,
-            _logging_callback: logging_callback,
-        }
-    }
-
-    pub async fn initialize(&mut self) -> Result<InitializeResult> {
-        let params = InitializeRequestParams {
-            protocol_version: "1.0".to_string(),
-            capabilities: ClientCapabilities {
-                sampling: Some(SamplingCapability {
-                    sample_size: 100,
-                    extra: HashMap::new(),
-                }),
-                roots: Some(RootsCapability {
-                    list_changed: true,
-                    extra: HashMap::new(),
-                }),
-                extra: HashMap::new(),
+        // Perform the MCP initialize handshake.
+        let init_request_id = RequestId::Num(0); // Standard to use 0 for init
+        let init_params = InitializeRequestParams {
+            protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
+            client_info: Implementation {
+                name: "mcp-rust-sdk-client".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            client_info: self.client_info.clone(),
-            extra: HashMap::new(),
+            capabilities: ClientCapabilities::default(),
         };
 
-        let request = InitializeRequest::new(params);
-        self.send_request(request).await
-    }
-
-    pub async fn list_resources(
-        &mut self,
-        params: PaginatedRequestParams,
-    ) -> Result<ListResourcesResult> {
-        let request = ListResourcesRequest::new(params);
-        self.send_request(request).await
-    }
-
-    pub async fn list_tools(&mut self, params: PaginatedRequestParams) -> Result<ListToolsResult> {
-        let request = ListToolsRequest::new(params);
-        self.send_request(request).await
-    }
-
-    pub async fn call_tool(
-        &mut self,
-        name: String,
-        arguments: HashMap<String, String>,
-    ) -> Result<ToolResult> {
-        let params = ToolCallParams { name, arguments };
-        let request = ToolCallRequest::new(params);
-        self.send_request(request).await
-    }
-
-    async fn send_request<T: for<'de> serde::Deserialize<'de>>(
-        &mut self,
-        request: impl serde::Serialize,
-    ) -> Result<T> {
-        // Send request
-        self.write_stream
-            .send(SessionMessage {
-                message: serde_json::to_value(request)?,
-            })
-            .await?;
-
-        // Wait for response from self.read_stream
-        loop {
-            if let Some(message) = self.read_stream.recv().await {
-                println!("[CLIENT DEBUG] Raw message received: {:?}", message);
-                // Check for error field in the response
-                if let Some(error_msg) = message.message.get("error").and_then(|e| e.as_str()) {
-                    return Err(anyhow::anyhow!("Server error: {}", error_msg));
-                }
-                match serde_json::from_value::<T>(message.message.clone()) {
-                    Ok(result) => return Ok(result),
-                    Err(e) => {
-                        println!(
-                            "[CLIENT DEBUG] Failed to deserialize message: {}\nMessage: {:?}",
-                            e, message.message
-                        );
-                        continue; // Skip non-matching messages
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-        Err(anyhow::anyhow!("No response received"))
-    }
-
-    async fn handle_messages(&mut self) -> Result<()> {
-        loop {
-            if let Some(message) = self.read_stream.recv().await {
-                match serde_json::from_value::<Value>(message.message) {
-                    Ok(value) => match value.get("method").and_then(|m| m.as_str()) {
-                        Some("initialize") => self.handle_initialize(value).await?,
-                        Some("resources/list") => self.handle_list_resources(value).await?,
-                        Some("tools/list") => self.handle_list_tools(value).await?,
-                        _ => self.handle_notification(value).await?,
-                    },
-                    Err(_) => continue,
-                }
-            } else {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_initialize(&mut self, _value: Value) -> Result<()> {
-        // Handle initialize message
-        Ok(())
-    }
-
-    async fn handle_list_resources(&mut self, _value: Value) -> Result<()> {
-        // Handle list resources message
-        Ok(())
-    }
-
-    async fn handle_list_tools(&mut self, _value: Value) -> Result<()> {
-        // Handle list tools message
-        Ok(())
-    }
-
-    async fn handle_notification(&mut self, _value: Value) -> Result<()> {
-        // Handle notification message
-        Ok(())
-    }
-}
-
-pub struct ClientSessionGroup {
-    sessions: HashMap<Url, Arc<tokio::sync::Mutex<ClientSession>>>,
-    _tools: HashMap<String, Tool>,
-    _resources: HashMap<String, Resource>,
-    _prompts: HashMap<String, Value>,
-}
-
-impl ClientSessionGroup {
-    /// Only public for integration testing in `tests/`.
-    pub async fn list_resources_with_params(
-        &mut self,
-        server_url: &Url,
-        params: PaginatedRequestParams,
-    ) -> Result<ListResourcesResult> {
-        if let Some(session) = self.sessions.get(server_url) {
-            let mut guard = session.lock().await;
-            guard.list_resources(params).await
-        } else {
-            Err(anyhow::anyhow!("No session for the given server_url"))
-        }
-    }
-
-    pub async fn list_resources(&mut self, server_url: &Url) -> Result<ListResourcesResult> {
-        if let Some(session) = self.sessions.get(server_url) {
-            let mut guard = session.lock().await;
-            guard.list_resources(Default::default()).await
-        } else {
-            Err(anyhow::anyhow!("No session for the given server_url"))
-        }
-    }
-
-    pub async fn list_tools(
-        &mut self,
-        server_url: &Url,
-        params: PaginatedRequestParams,
-    ) -> Result<ListToolsResult> {
-        if let Some(session) = self.sessions.get(server_url) {
-            let mut guard = session.lock().await;
-            guard.list_tools(params).await
-        } else {
-            Err(anyhow::anyhow!("No session for the given server_url"))
-        }
-    }
-
-    pub async fn call_tool(
-        &mut self,
-        server_url: &Url,
-        name: String,
-        arguments: HashMap<String, String>,
-    ) -> Result<ToolResult> {
-        if let Some(session) = self.sessions.get(server_url) {
-            let mut guard = session.lock().await;
-            guard.call_tool(name, arguments).await
-        } else {
-            Err(anyhow::anyhow!("No session for the given server_url"))
-        }
-    }
-    pub fn new() -> Self {
-        Self {
-            sessions: HashMap::new(),
-            _tools: HashMap::new(),
-            _resources: HashMap::new(),
-            _prompts: HashMap::new(),
-        }
-    }
-
-    pub async fn connect_to_server(&mut self, server_url: Url) -> Result<()> {
-        use std::sync::Arc;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-        use tokio::net::TcpStream;
-        let addr = match server_url.socket_addrs(|| None) {
-            Ok(addrs) => addrs[0],
-            Err(_) => return Err(anyhow::anyhow!("Invalid server URL for TCP connection")),
+        let init_request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: init_request_id.clone(),
+            method: "initialize".to_string(),
+            params: init_params,
         };
-        let stream = TcpStream::connect(addr).await?;
-        let (read_half, write_half) = stream.into_split();
-        let mut reader = BufReader::new(read_half);
-        let mut writer = BufWriter::new(write_half);
-        let (read_tx, read_rx): (mpsc::Sender<SessionMessage>, mpsc::Receiver<SessionMessage>) =
-            mpsc::channel(100);
-        let (write_tx, mut write_rx): (
-            mpsc::Sender<SessionMessage>,
-            mpsc::Receiver<SessionMessage>,
-        ) = mpsc::channel(100);
-        // Spawn read task
-        tokio::spawn(async move {
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        println!("[CLIENT TCP DEBUG] Received line: {:?}", line);
-                        if let Ok(msg) = serde_json::from_str::<SessionMessage>(&line) {
-                            println!("[CLIENT TCP DEBUG] Parsed as SessionMessage: {:?}", msg);
-                            let _ = read_tx.send(msg).await;
-                        } else {
-                            println!(
-                                "[CLIENT TCP DEBUG] Failed to parse line as SessionMessage: {:?}",
-                                line
-                            );
-                        }
-                    }
-                    Err(_) => break,
+
+        connection.send_message(init_request).await?;
+
+        let response: JSONRPCResponse<InitializeResult> = connection
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed during initialization"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => {
+                if success.id != init_request_id {
+                    return Err(anyhow::anyhow!("Mismatched initialize response ID"));
                 }
+                println!(
+                    "Handshake successful. Server: {:?}",
+                    success.result.server_info
+                );
+                // Can store success.result.capabilities if needed
             }
-        });
-        // Spawn write task
-        tokio::spawn(async move {
-            while let Some(msg) = write_rx.recv().await {
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    println!("[CLIENT TCP DEBUG] Sending: {}", json);
-                    let _ = writer.write_all(json.as_bytes()).await;
-                    let _ = writer.write_all(b"\n").await;
-                    let _ = writer.flush().await;
-                    println!("[CLIENT TCP DEBUG] Flushed message to server");
-                }
+            JSONRPCResponse::Error(err) => {
+                return Err(anyhow::anyhow!("Initialization failed: {:?}", err.error));
             }
-        });
-        // Create session
-        let session = Arc::new(tokio::sync::Mutex::new(ClientSession::new(
-            read_rx,
-            write_tx,
-            Implementation {
-                name: "mcp-rust-client".to_string(),
-                version: "0.1.0".to_string(),
+        }
+
+        Ok(Self {
+            connection: tokio::sync::Mutex::new(connection),
+            next_request_id: AtomicI64::new(1), // Start subsequent requests from 1
+        })
+    }
+
+    /// Generates a new, unique request ID for a JSON-RPC message.
+    fn new_request_id(&self) -> RequestId {
+        let id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        RequestId::Num(id)
+    }
+
+    /// Fetches the list of available tools from the server.
+    pub async fn list_tools(&self) -> Result<Vec<Tool>> {
+        let request_id = self.new_request_id();
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id.clone(),
+            method: "tools/list".to_string(),
+            params: ListToolsParams {},
+        };
+
+        let mut conn = self.connection.lock().await;
+        conn.send_message(request).await?;
+
+        let response: JSONRPCResponse<Vec<Tool>> = conn
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => Ok(success.result),
+            JSONRPCResponse::Error(err) => {
+                Err(anyhow::anyhow!("list_tools failed: {:?}", err.error))
+            }
+        }
+    }
+
+    /// Calls a specific tool on the server.
+    pub async fn call_tool(&self, name: String, arguments: Value) -> Result<CallToolResult> {
+        let request_id = self.new_request_id();
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id.clone(),
+            method: "tools/call".to_string(),
+            params: CallToolParams { name, arguments },
+        };
+
+        let mut conn = self.connection.lock().await;
+        conn.send_message(request).await?;
+
+        let response: JSONRPCResponse<CallToolResult> = conn
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => Ok(success.result),
+            JSONRPCResponse::Error(err) => {
+                Err(anyhow::anyhow!("call_tool failed: {:?}", err.error))
+            }
+        }
+    }
+
+    /// Fetches the list of available resources from the server.
+    pub async fn list_resources(&self) -> Result<Vec<Resource>> {
+        let request_id = self.new_request_id();
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id.clone(),
+            method: "resources/list".to_string(),
+            params: ListResourcesParams {},
+        };
+
+        let mut conn = self.connection.lock().await;
+        conn.send_message(request).await?;
+
+        let response: JSONRPCResponse<Vec<Resource>> = conn
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => Ok(success.result),
+            JSONRPCResponse::Error(err) => {
+                Err(anyhow::anyhow!("list_resources failed: {:?}", err.error))
+            }
+        }
+    }
+
+    /// Reads the content of a specific resource from the server.
+    pub async fn read_resource(&self, uri: String) -> Result<ReadResourceResult> {
+        let request_id = self.new_request_id();
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id.clone(),
+            method: "resources/read".to_string(),
+            params: ReadResourceParams { uri },
+        };
+
+        let mut conn = self.connection.lock().await;
+        conn.send_message(request).await?;
+
+        let response: JSONRPCResponse<ReadResourceResult> = conn
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => Ok(success.result),
+            JSONRPCResponse::Error(err) => {
+                Err(anyhow::anyhow!("read_resource failed: {:?}", err.error))
+            }
+        }
+    }
+}
+
+// --- Unit Tests ---
+// These tests verify the client's internal logic, especially the handshake.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::NetworkAdapter;
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    // --- Mock Infrastructure for Testing ---
+
+    /// A mock adapter that uses an in-memory queue.
+    #[derive(Default, Clone)]
+    struct MockAdapter {
+        incoming: Arc<Mutex<VecDeque<String>>>,
+        outgoing: Arc<Mutex<VecDeque<String>>>,
+    }
+
+    impl MockAdapter {
+        fn push_incoming(&self, msg: String) {
+            self.incoming.lock().unwrap().push_back(msg);
+        }
+    }
+
+    #[async_trait]
+    impl NetworkAdapter for MockAdapter {
+        async fn send(&mut self, msg: &str) -> Result<()> {
+            self.outgoing.lock().unwrap().push_back(msg.to_string());
+            Ok(())
+        }
+        async fn recv(&mut self) -> Result<Option<String>> {
+            Ok(self.incoming.lock().unwrap().pop_front())
+        }
+    }
+
+    // This is a reimplementation of the client's `connect` logic, but on a generic
+    // adapter so that we can test it with our `MockAdapter`.
+    async fn connect_with_mock_adapter(
+        mut connection: ProtocolConnection<MockAdapter>,
+    ) -> Result<()> {
+        let init_request_id = RequestId::Num(0);
+        let init_params = InitializeRequestParams {
+            protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
+            client_info: Implementation {
+                name: "test-client".into(),
+                version: "0.1.0".into(),
             },
-            None,
-            None,
-            None,
-        )));
-        // Spawn message handling loop
-        let session_clone = session.clone();
-        tokio::spawn(async move {
-            let _ = session_clone.lock().await.handle_messages().await;
+            capabilities: ClientCapabilities::default(),
+        };
+        let init_request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: init_request_id.clone(),
+            method: "initialize".to_string(),
+            params: init_params,
+        };
+        connection.send_message(init_request).await?;
+        let response: JSONRPCResponse<InitializeResult> = connection.recv_message().await?.unwrap();
+        match response {
+            JSONRPCResponse::Success(_) => Ok(()),
+            JSONRPCResponse::Error(err) => Err(anyhow::anyhow!("Init failed: {:?}", err.error)),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_sends_initialize_and_receives_ok() {
+        // 1. Setup mock adapter and connection
+        let adapter = MockAdapter::default();
+        let outgoing_buffer = Arc::clone(&adapter.outgoing);
+        let connection = ProtocolConnection::new(adapter.clone());
+
+        // 2. Queue up the server's successful response to the initialize request
+        let init_response = json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "result": {
+                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "serverInfo": { "name": "mock-server", "version": "0.1.0" },
+                "capabilities": {}
+            }
         });
-        self.sessions.insert(server_url, session);
-        Ok(())
+        adapter.push_incoming(serde_json::to_string(&init_response).unwrap());
+
+        // 3. Run our mock connection logic
+        let result = connect_with_mock_adapter(connection).await;
+        assert!(result.is_ok());
+
+        // 4. Assert that the client sent the correct initialize request
+        let sent_messages = outgoing_buffer.lock().unwrap();
+        assert_eq!(sent_messages.len(), 1);
+        let sent_req_str = sent_messages.front().unwrap();
+        let sent_req: Request<InitializeRequestParams> =
+            serde_json::from_str(sent_req_str).unwrap();
+
+        assert_eq!(sent_req.method, "initialize");
+        assert_eq!(sent_req.id, RequestId::Num(0));
+        assert_eq!(sent_req.params.protocol_version, LATEST_PROTOCOL_VERSION);
     }
 }

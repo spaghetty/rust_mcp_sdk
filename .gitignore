@@ -1,8 +1,7 @@
 # Rust/Cargo
-/target/
+**/target/
 **/*.rs.bk
 **/*.swp
-Cargo.lock
 
 # IDEs/editors
 .idea/
@@ -28,11 +27,9 @@ Thumbs.db
 *.dylib
 
 # Coverage/test output
-/coverage/
-/coverage-final.json
-/coverage.lcov
-/target/debug/
-/target/release/
+**/coverage/
+**/coverage-final.json
+**/coverage.lcov
 
 # Misc
 *.tmp
@@ -47,8 +44,6 @@ node_modules/
 .env.*
 
 # Ignore generated docs (if any)
-doc/
-/docs/book/
 
 # Ignore by default but allow docs/ for design docs
 !/docs/
