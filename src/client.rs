@@ -8,8 +8,8 @@ use crate::adapter::TcpAdapter;
 use crate::protocol::ProtocolConnection;
 use crate::types::{
     CallToolParams, CallToolResult, ClientCapabilities, Implementation, InitializeRequestParams,
-    InitializeResult, JSONRPCResponse, ListToolsParams, Request, RequestId, Tool,
-    LATEST_PROTOCOL_VERSION,
+    InitializeResult, JSONRPCResponse, ListResourcesParams, ListToolsParams, ReadResourceParams,
+    ReadResourceResult, Request, RequestId, Resource, Tool, LATEST_PROTOCOL_VERSION,
 };
 use anyhow::Result;
 use serde_json::Value;
@@ -130,6 +130,58 @@ impl Client {
             JSONRPCResponse::Success(success) => Ok(success.result),
             JSONRPCResponse::Error(err) => {
                 Err(anyhow::anyhow!("call_tool failed: {:?}", err.error))
+            }
+        }
+    }
+
+    /// Fetches the list of available resources from the server.
+    pub async fn list_resources(&self) -> Result<Vec<Resource>> {
+        let request_id = self.new_request_id();
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id.clone(),
+            method: "resources/list".to_string(),
+            params: ListResourcesParams {},
+        };
+
+        let mut conn = self.connection.lock().await;
+        conn.send_message(request).await?;
+
+        let response: JSONRPCResponse<Vec<Resource>> = conn
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => Ok(success.result),
+            JSONRPCResponse::Error(err) => {
+                Err(anyhow::anyhow!("list_resources failed: {:?}", err.error))
+            }
+        }
+    }
+
+    /// Reads the content of a specific resource from the server.
+    pub async fn read_resource(&self, uri: String) -> Result<ReadResourceResult> {
+        let request_id = self.new_request_id();
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id.clone(),
+            method: "resources/read".to_string(),
+            params: ReadResourceParams { uri },
+        };
+
+        let mut conn = self.connection.lock().await;
+        conn.send_message(request).await?;
+
+        let response: JSONRPCResponse<ReadResourceResult> = conn
+            .recv_message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
+
+        match response {
+            JSONRPCResponse::Success(success) => Ok(success.result),
+            JSONRPCResponse::Error(err) => {
+                Err(anyhow::anyhow!("read_resource failed: {:?}", err.error))
             }
         }
     }

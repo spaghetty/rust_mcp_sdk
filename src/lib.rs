@@ -33,11 +33,18 @@ pub use client::Client;
 pub use protocol::ProtocolConnection;
 pub use server::Server;
 pub use types::{
+    // Resource-related types
+    BlobResourceContents,
+    // Tool-related types
     CallToolResult,
     Content,
+    EmbeddedResource,
     ImageContent,
+    ReadResourceResult,
+    Resource,
+    ResourceContents,
     TextContent,
+    TextResourceContents,
     Tool,
     ToolAnnotations,
-    // Re-export other important types as they are added.
 };

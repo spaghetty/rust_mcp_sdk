@@ -5,7 +5,8 @@
 
 use anyhow::Result;
 use mcp_sdk::{
-    CallToolResult, Client, Content, ProtocolConnection, Server, TcpAdapter, TextContent, Tool,
+    CallToolResult, Client, Content, ProtocolConnection, ReadResourceResult, Resource,
+    ResourceContents, Server, TcpAdapter, TextContent, TextResourceContents, Tool,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -34,6 +35,28 @@ async fn mock_call_tool_handler(name: String, _args: Value) -> Result<CallToolRe
             text: "e2e test successful".to_string(),
         })],
         is_error: false,
+    })
+}
+
+async fn mock_list_resources_handler() -> Result<Vec<Resource>> {
+    Ok(vec![Resource {
+        uri: "mcp://e2e/file.txt".to_string(),
+        name: "file.txt".to_string(),
+        description: Some("An end-to-end test resource".to_string()),
+        mime_type: Some("text/plain".to_string()),
+    }])
+}
+
+async fn mock_read_resource_handler(uri: String) -> Result<ReadResourceResult> {
+    if uri != "mcp://e2e/file.txt" {
+        return Err(anyhow::anyhow!("Unknown resource in e2e test"));
+    }
+    Ok(ReadResourceResult {
+        contents: vec![ResourceContents::Text(TextResourceContents {
+            uri: uri.clone(),
+            mime_type: Some("text/plain".to_string()),
+            text: "Hello, Resource!".to_string(),
+        })],
     })
 }
 
@@ -91,6 +114,39 @@ async fn test_full_client_server_interaction() {
     let tools = client.list_tools().await.unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "e2e-test-tool");
+}
+
+#[tokio::test]
+async fn test_full_resource_interaction() {
+    let server = Arc::new(
+        Server::new("mcp-resource-test")
+            .on_list_resources(mock_list_resources_handler)
+            .on_read_resource(mock_read_resource_handler),
+    );
+    let (server_addr, _server_handle) = setup_test_server(server, 1).await;
+    let client = Client::connect(&server_addr).await.unwrap();
+
+    // 1. List the available resources
+    let resources = client.list_resources().await.unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].name, "file.txt");
+    assert_eq!(resources[0].uri, "mcp://e2e/file.txt");
+
+    // 2. Read a specific resource
+    let resource_result = client
+        .read_resource("mcp://e2e/file.txt".to_string())
+        .await
+        .unwrap();
+    assert_eq!(resource_result.contents.len(), 1);
+
+    // 3. Verify the contents of the read resource
+    match &resource_result.contents[0] {
+        ResourceContents::Text(text_contents) => {
+            assert_eq!(text_contents.uri, "mcp://e2e/file.txt");
+            assert_eq!(text_contents.text, "Hello, Resource!");
+        }
+        _ => panic!("Expected TextResourceContents"),
+    }
 }
 
 #[tokio::test]

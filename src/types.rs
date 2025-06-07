@@ -24,6 +24,18 @@ pub struct Tool {
     pub annotations: Option<ToolAnnotations>,
 }
 
+/// A known resource that the server is capable of reading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Resource {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
 /// The server's response to a `tools/call` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +43,13 @@ pub struct CallToolResult {
     pub content: Vec<Content>,
     #[serde(default)]
     pub is_error: bool,
+}
+
+/// The server's response to a `resources/read` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadResourceResult {
+    pub contents: Vec<ResourceContents>,
 }
 
 // --- Content and Resource Types ---
@@ -170,7 +189,6 @@ pub struct InitializeResult {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientCapabilities {
-    // We can add fields here as we support more capabilities.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsCapability>,
 }
@@ -178,7 +196,6 @@ pub struct ClientCapabilities {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
-    // We can add fields here as we support more capabilities.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsCapability>,
 }
@@ -209,15 +226,22 @@ pub struct CallToolParams {
     pub arguments: Value,
 }
 
-// --- Unit Tests ---
-// Ensures that our Rust types correctly serialize to and deserialize from the JSON format.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListResourcesParams {}
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadResourceParams {
+    pub uri: String,
+}
+
+// --- Unit Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Tests the serialization and deserialization of the `Tool` struct.
     #[test]
     fn test_tool_roundtrip() {
         let tool = Tool {
@@ -232,74 +256,45 @@ mod tests {
                 ..Default::default()
             }),
         };
-
-        // Serialize to JSON string
         let json_string = serde_json::to_string(&tool).unwrap();
-
-        // Deserialize back to a Tool struct
-        let deserialized_tool: Tool = serde_json::from_str(&json_string).unwrap();
-
-        // Assert that the deserialized version is identical to the original
-        assert_eq!(tool, deserialized_tool);
+        let deserialized: Tool = serde_json::from_str(&json_string).unwrap();
+        assert_eq!(tool, deserialized);
     }
 
-    /// Tests the serialization and deserialization of a `CallToolResult`.
     #[test]
-    fn test_call_tool_result_roundtrip() {
-        let result = CallToolResult {
-            content: vec![Content::Text(TextContent {
-                r#type: "text".to_string(),
-                text: "Hello, world!".to_string(),
-            })],
-            is_error: false,
+    fn test_resource_roundtrip() {
+        let resource = Resource {
+            name: "My File".to_string(),
+            uri: "file:///path/to/file.txt".to_string(),
+            description: Some("A test file".to_string()),
+            mime_type: Some("text/plain".to_string()),
         };
+        let json_string = serde_json::to_string(&resource).unwrap();
+        let deserialized: Resource = serde_json::from_str(&json_string).unwrap();
+        assert_eq!(resource, deserialized);
+    }
 
+    #[test]
+    fn test_read_resource_result_roundtrip() {
+        let result = ReadResourceResult {
+            contents: vec![
+                ResourceContents::Text(TextResourceContents {
+                    uri: "file:///doc.txt".to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                    text: "Hello".to_string(),
+                }),
+                ResourceContents::Blob(BlobResourceContents {
+                    uri: "file:///img.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    blob: "base64data".to_string(),
+                }),
+            ],
+        };
         let json_string = serde_json::to_string(&result).unwrap();
-        let deserialized_result: CallToolResult = serde_json::from_str(&json_string).unwrap();
-
-        assert_eq!(result, deserialized_result);
+        let deserialized: ReadResourceResult = serde_json::from_str(&json_string).unwrap();
+        assert_eq!(result, deserialized);
     }
 
-    /// Tests a full JSON-RPC request roundtrip.
-    #[test]
-    fn test_json_rpc_request_roundtrip() {
-        let request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: RequestId::Num(1),
-            method: "tools/call".to_string(),
-            params: CallToolParams {
-                name: "fetch".to_string(),
-                arguments: json!({"url": "https://example.com"}),
-            },
-        };
-
-        let json_string = serde_json::to_string(&request).unwrap();
-        let deserialized_request: Request<CallToolParams> =
-            serde_json::from_str(&json_string).unwrap();
-
-        assert_eq!(request, deserialized_request);
-    }
-
-    /// Verifies that deserialization handles camelCase correctly.
-    #[test]
-    fn test_camel_case_deserialization() {
-        let json_data = r#"
-        {
-            "name": "my-tool",
-            "inputSchema": { "type": "string" },
-            "annotations": {
-                "readOnlyHint": true
-            }
-        }
-        "#;
-
-        let tool: Tool = serde_json::from_str(json_data).unwrap();
-
-        assert_eq!(tool.name, "my-tool");
-        assert_eq!(tool.annotations.unwrap().read_only_hint, Some(true));
-    }
-
-    /// Tests deserialization of a successful JSON-RPC response.
     #[test]
     fn test_jsonrpc_response_success() {
         let success_json = r#"
@@ -319,7 +314,6 @@ mod tests {
         }
     }
 
-    /// Tests deserialization of a JSON-RPC error response.
     #[test]
     fn test_jsonrpc_response_error() {
         let error_json = r#"

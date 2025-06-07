@@ -1,13 +1,14 @@
-//! An example of a simple MCP tool server built using the mcp-sdk.
-//! This server provides a single tool called `fetch`.
+//! An example MCP server that provides a `fetch` tool and resource handling.
 
 use anyhow::Result;
-// FIX: Import types from the crate root, not the private `types` module.
-use mcp_sdk::{CallToolResult, Content, Server, TextContent, Tool};
+use mcp_sdk::{
+    CallToolResult, Content, ReadResourceResult, Resource, ResourceContents, Server, TextContent,
+    TextResourceContents, Tool,
+};
 use serde_json::{json, Value};
 
-/// A mock handler for the `tools/list` request.
-/// It returns a static list containing our "fetch" tool.
+// --- Tool Handler Implementations ---
+
 async fn list_fetch_tool() -> Result<Vec<Tool>> {
     println!("[Server] Handler invoked: list_fetch_tool");
     Ok(vec![Tool {
@@ -22,27 +23,14 @@ async fn list_fetch_tool() -> Result<Vec<Tool>> {
     }])
 }
 
-/// A mock handler for the `tools/call` request.
-/// It checks if the tool name is "fetch" and returns a mock result.
 async fn call_fetch_tool(name: String, args: Value) -> Result<CallToolResult> {
     println!(
         "[Server] Handler invoked: call_fetch_tool with name='{}'",
         name
     );
-    if name != "fetch" {
-        // In a real implementation, we would return a proper JSON-RPC error.
-        return Err(anyhow::anyhow!("Unknown tool called: {}", name));
-    }
-
-    let url = args
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Missing required 'url' argument"))?;
-
+    let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
     println!("[Server] Simulating fetch for URL: {}", url);
-
     Ok(CallToolResult {
-        // FIX: Now that `Content` is in scope, we can use it directly.
         content: vec![Content::Text(TextContent {
             r#type: "text".to_string(),
             text: format!("Mock content of {}", url),
@@ -51,19 +39,49 @@ async fn call_fetch_tool(name: String, args: Value) -> Result<CallToolResult> {
     })
 }
 
+// --- Resource Handler Implementations ---
+
+async fn list_resources_handler() -> Result<Vec<Resource>> {
+    println!("[Server] Handler invoked: list_resources_handler");
+    Ok(vec![Resource {
+        uri: "mcp://example/hello.txt".to_string(),
+        name: "hello.txt".to_string(),
+        description: Some("An example resource file.".to_string()),
+        mime_type: Some("text/plain".to_string()),
+    }])
+}
+
+async fn read_resource_handler(uri: String) -> Result<ReadResourceResult> {
+    println!(
+        "[Server] Handler invoked: read_resource_handler for uri: '{}'",
+        uri
+    );
+    if uri != "mcp://example/hello.txt" {
+        return Err(anyhow::anyhow!("Unknown resource URI: {}", uri));
+    }
+    Ok(ReadResourceResult {
+        contents: vec![ResourceContents::Text(TextResourceContents {
+            uri,
+            mime_type: Some("text/plain".to_string()),
+            text: "Hello from a resource!".to_string(),
+        })],
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
 
-    // 1. Create a new server instance using the builder pattern.
-    let server = Server::new("mcp-fetch-example-server")
+    // Create a server and register all handlers unconditionally.
+    let server = Server::new("mcp-unified-example-server")
         .on_list_tools(list_fetch_tool)
-        .on_call_tool(call_fetch_tool);
+        .on_call_tool(call_fetch_tool)
+        .on_list_resources(list_resources_handler)
+        .on_read_resource(read_resource_handler);
 
+    println!("[Server] All handlers (tools and resources) are enabled.");
     println!("[Server] Starting on {}...", addr);
 
-    // 2. Start the server's main listen loop.
-    // This will run forever, accepting and handling client connections.
     server.listen(addr).await?;
 
     Ok(())

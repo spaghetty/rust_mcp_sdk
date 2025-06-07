@@ -2,14 +2,11 @@
 name = "simple-server-example"
 version = "0.1.0"
 edition = "2021"
-publish = false  # This is an example, not meant to be published
+publish = false
 
 [dependencies]
 anyhow = "1"
-# Our main SDK library, referenced via a path dependency.
-# This assumes the `examples` directory is at the same level as the root
-# `Cargo.toml` of our main `mcp-sdk` crate.
 mcp-sdk = { path = "../.." }
 serde_json = "1.0"
-# We also need the dependencies our example application code uses directly.
 tokio = { version = "1", features = ["full"] }
+# The 'clap' dependency has been removed.
