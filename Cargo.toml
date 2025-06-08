@@ -5,27 +5,20 @@ authors = ["Your Name <you@example.com>"]
 edition = "2021"
 description = "A Rust implementation of the Model Context Protocol (MCP) SDK."
 readme = "README.md"
-repository = "https://github.com/your-username/mcp-rust-sdk"  # TODO: Update with your repository URL
 license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+  ".",
+  "examples/simple_client",
+  "examples/simple_server",
+]
 
 [dependencies]
-# A flexible and ergonomic library for error handling.
-# This will simplify our function signatures that can return errors.
-anyhow = "1.0.86"
-# A trait for creating abstract async methods, which we will use for our NetworkAdapter.
-async-trait = "0.1.80"
-# The standard for high-performance, safe serialization and deserialization.
-# We enable the "derive" feature to automatically generate serialization logic for our structs.
-serde = { version = "1.0.203", features = ["derive"] }
-# The specific implementation for JSON serialization/deserialization with Serde.
-serde_json = "1.0.117"
-# The core asynchronous runtime for building network applications.
-# We enable "full" features to get everything we need: tcp, io, time, etc.
-tokio = { version = "1.37.0", features = ["full"] }
-
-[dev-dependencies]
-# Development-only dependencies are used for running tests and examples.
-# We don't need to add anything here yet, as the main dependencies are sufficient
-# for the unit tests in `types.rs`.
+anyhow = "1.0"
+async-trait = "0.1"
+# Add dashmap for concurrent request tracking
+dashmap = "5.5.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }

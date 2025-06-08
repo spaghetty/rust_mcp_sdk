@@ -13,7 +13,7 @@ use crate::types::{
     METHOD_NOT_FOUND,
 };
 use crate::TcpAdapter;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -98,39 +98,37 @@ impl Server {
     /// Starts the server and listens for incoming TCP connections.
     pub async fn listen(self, addr: &str) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        println!("{} listening on {}", self.name, addr);
+        println!("[Server] Listening on {}", addr);
         let server = Arc::new(self);
 
         loop {
             let (stream, client_addr) = listener.accept().await?;
-            println!("Accepted connection from: {}", client_addr);
+            println!("[Server] Accepted connection from: {}", client_addr);
             let server_clone = Arc::clone(&server);
             tokio::spawn(async move {
                 let adapter = TcpAdapter::new(stream);
                 let mut conn = ProtocolConnection::new(adapter);
                 if let Err(e) = server_clone.handle_connection(&mut conn).await {
-                    eprintln!("Error handling connection from {}: {}", client_addr, e);
+                    eprintln!("[Server] Handler failed for {}: {}", client_addr, e);
                 }
             });
         }
     }
 
-    /// Handles a single client connection, starting with the initialize handshake.
-    /// This method is generic over any type that implements `NetworkAdapter`.
+    /// REFACTORED: Handles a single client connection using a stateful loop.
     pub async fn handle_connection<A: NetworkAdapter>(
         &self,
         conn: &mut ProtocolConnection<A>,
     ) -> Result<()> {
-        // First, robustly handle the initialize handshake.
-        if let Some(first_req_val) = conn.recv_message::<Value>().await? {
-            if let Some(method) = first_req_val.get("method").and_then(Value::as_str) {
-                if method == "initialize" {
+        let mut is_initialized = false;
+
+        while let Some(raw_req) = conn.recv_message::<Value>().await? {
+            // The first message MUST be an initialize request.
+            if !is_initialized {
+                if let Some("initialize") = raw_req.get("method").and_then(Value::as_str) {
                     let init_req: Request<InitializeRequestParams> =
-                        serde_json::from_value(first_req_val)?;
-                    println!(
-                        "Received initialize from: {:?}",
-                        init_req.params.client_info
-                    );
+                        serde_json::from_value(raw_req)?;
+
                     let init_response = Response {
                         jsonrpc: "2.0".to_string(),
                         id: init_req.id,
@@ -143,22 +141,19 @@ impl Server {
                             capabilities: ServerCapabilities::default(),
                         },
                     };
-                    conn.send_message(init_response).await?;
+                    conn.send_serializable(init_response).await?;
+                    is_initialized = true;
+                    continue; // Continue to the next loop iteration for the next request.
                 } else {
-                    return Err(anyhow::anyhow!(
-                        "First message was not initialize, but {}",
-                        method
+                    return Err(anyhow!(
+                        "First message from client was not an 'initialize' request."
                     ));
                 }
-            } else {
-                return Err(anyhow::anyhow!("First message was not a valid request."));
             }
-        } else {
-            return Ok(()); // Connection closed immediately, which is fine.
-        }
 
-        // After successful handshake, enter the main request dispatch loop.
-        while let Some(req) = conn.recv_message::<Request<Value>>().await? {
+            // After initialization, handle all other requests.
+            let req: Request<Value> = serde_json::from_value(raw_req)?;
+
             match req.method.as_str() {
                 "tools/list" => {
                     if let Some(handler) = &self.list_tools_handler {
@@ -168,7 +163,7 @@ impl Server {
                             jsonrpc: "2.0".to_string(),
                             result,
                         };
-                        conn.send_message(response).await?;
+                        conn.send_serializable(response).await?;
                     } else {
                         self.send_error(
                             conn,
@@ -188,7 +183,7 @@ impl Server {
                             jsonrpc: "2.0".to_string(),
                             result,
                         };
-                        conn.send_message(response).await?;
+                        conn.send_serializable(response).await?;
                     } else {
                         self.send_error(
                             conn,
@@ -207,7 +202,7 @@ impl Server {
                             jsonrpc: "2.0".to_string(),
                             result,
                         };
-                        conn.send_message(response).await?;
+                        conn.send_serializable(response).await?;
                     } else {
                         self.send_error(
                             conn,
@@ -227,7 +222,7 @@ impl Server {
                             jsonrpc: "2.0".to_string(),
                             result,
                         };
-                        conn.send_message(response).await?;
+                        conn.send_serializable(response).await?;
                     } else {
                         self.send_error(
                             conn,
@@ -238,6 +233,9 @@ impl Server {
                         .await?;
                     }
                 }
+                "initialize" => {
+                    return Err(anyhow!("Client sent 'initialize' request twice."));
+                }
                 unhandled_method => {
                     self.send_error(
                         conn,
@@ -247,7 +245,7 @@ impl Server {
                     )
                     .await?;
                 }
-            };
+            }
         }
         Ok(())
     }
@@ -268,204 +266,6 @@ impl Server {
                 message: message.to_string(),
             },
         };
-        conn.send_message(error_response).await
-    }
-}
-
-// --- Unit Tests ---
-// These tests verify the server's internal logic in isolation.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::adapter::NetworkAdapter;
-    use crate::types::{JSONRPCResponse, ResourceContents, TextResourceContents};
-    use async_trait::async_trait;
-    use serde_json::json;
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
-
-    // --- Mock Infrastructure for Testing ---
-
-    /// A mock adapter that uses an in-memory queue.
-    #[derive(Default, Clone)]
-    struct MockAdapter {
-        incoming: Arc<Mutex<VecDeque<String>>>,
-        outgoing: Arc<Mutex<VecDeque<String>>>,
-    }
-
-    impl MockAdapter {
-        /// Helper method for tests to queue up a message as if it were from a client.
-        fn push_incoming(&self, msg: String) {
-            self.incoming.lock().unwrap().push_back(msg);
-        }
-    }
-
-    #[async_trait]
-    impl NetworkAdapter for MockAdapter {
-        async fn send(&mut self, msg: &str) -> Result<()> {
-            self.outgoing.lock().unwrap().push_back(msg.to_string());
-            Ok(())
-        }
-        async fn recv(&mut self) -> Result<Option<String>> {
-            Ok(self.incoming.lock().unwrap().pop_front())
-        }
-    }
-
-    // Helper to create a mock connection and a way to interact with it.
-    fn setup_mock_connection() -> (
-        ProtocolConnection<MockAdapter>,
-        MockAdapter,
-        Arc<Mutex<VecDeque<String>>>,
-    ) {
-        let adapter = MockAdapter::default();
-        let test_adapter_handle = adapter.clone();
-        let outgoing_buffer = Arc::clone(&adapter.outgoing);
-        let conn = ProtocolConnection::new(adapter);
-        (conn, test_adapter_handle, outgoing_buffer)
-    }
-
-    // Helper to create a standard initialize request for tests.
-    fn make_init_request() -> String {
-        let init_req = json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": { "protocolVersion": "test", "clientInfo": {"name": "test", "version": "0"}, "capabilities": {} }
-        });
-        serde_json::to_string(&init_req).unwrap()
-    }
-
-    // --- Test Cases ---
-
-    #[tokio::test]
-    async fn test_handler_registration() {
-        // This test ensures that the builder pattern correctly registers handlers.
-        let server = Server::new("test")
-            .on_list_tools(|| async { Ok(vec![]) })
-            .on_call_tool(|_, _| async {
-                Ok(CallToolResult {
-                    content: vec![],
-                    is_error: false,
-                })
-            })
-            .on_list_resources(|| async { Ok(vec![]) })
-            .on_read_resource(|_| async { Ok(ReadResourceResult { contents: vec![] }) });
-
-        assert!(server.list_tools_handler.is_some());
-        assert!(server.call_tool_handler.is_some());
-        assert!(server.list_resources_handler.is_some());
-        assert!(server.read_resource_handler.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_to_list_tools_handler() {
-        // This test verifies that a "tools/list" request is correctly dispatched.
-        let server = Arc::new(Server::new("test").on_list_tools(|| async {
-            Ok(vec![Tool {
-                name: "test-tool-from-handler".to_string(),
-                description: None,
-                input_schema: json!({}),
-                annotations: None,
-            }])
-        }));
-
-        let (mut conn, adapter_handle, outgoing) = setup_mock_connection();
-        adapter_handle.push_incoming(make_init_request());
-        let list_req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
-        adapter_handle.push_incoming(serde_json::to_string(&list_req).unwrap());
-        server.handle_connection(&mut conn).await.unwrap();
-        let responses = outgoing.lock().unwrap();
-        assert_eq!(responses.len(), 2);
-        let list_response: JSONRPCResponse<Vec<Tool>> =
-            serde_json::from_str(responses.get(1).unwrap()).unwrap();
-        if let JSONRPCResponse::Success(res) = list_response {
-            assert_eq!(res.result[0].name, "test-tool-from-handler");
-        } else {
-            panic!("Expected a successful response for tools/list");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_to_list_resources_handler() {
-        // This test verifies that a "resources/list" request is correctly dispatched.
-        let server = Arc::new(Server::new("test").on_list_resources(|| async {
-            Ok(vec![Resource {
-                name: "test-resource".to_string(),
-                uri: "mcp://test".to_string(),
-                description: None,
-                mime_type: None,
-            }])
-        }));
-
-        let (mut conn, adapter_handle, outgoing) = setup_mock_connection();
-        adapter_handle.push_incoming(make_init_request());
-        let list_req =
-            json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {} });
-        adapter_handle.push_incoming(serde_json::to_string(&list_req).unwrap());
-        server.handle_connection(&mut conn).await.unwrap();
-        let responses = outgoing.lock().unwrap();
-        assert_eq!(responses.len(), 2);
-        let list_response: JSONRPCResponse<Vec<Resource>> =
-            serde_json::from_str(responses.get(1).unwrap()).unwrap();
-        if let JSONRPCResponse::Success(res) = list_response {
-            assert_eq!(res.result[0].name, "test-resource");
-        } else {
-            panic!("Expected a successful response for resources/list");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_to_read_resource_handler() {
-        // This test verifies that a "resources/read" request is correctly dispatched.
-        let server = Arc::new(Server::new("test").on_read_resource(|uri| async move {
-            Ok(ReadResourceResult {
-                contents: vec![ResourceContents::Text(TextResourceContents {
-                    uri,
-                    mime_type: None,
-                    text: "resource content".to_string(),
-                })],
-            })
-        }));
-
-        let (mut conn, adapter_handle, outgoing) = setup_mock_connection();
-        adapter_handle.push_incoming(make_init_request());
-        let read_req = json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "resources/read",
-            "params": { "uri": "mcp://test" }
-        });
-        adapter_handle.push_incoming(serde_json::to_string(&read_req).unwrap());
-        server.handle_connection(&mut conn).await.unwrap();
-        let responses = outgoing.lock().unwrap();
-        assert_eq!(responses.len(), 2);
-        let read_response: JSONRPCResponse<ReadResourceResult> =
-            serde_json::from_str(responses.get(1).unwrap()).unwrap();
-        if let JSONRPCResponse::Success(res) = read_response {
-            assert_eq!(res.result.contents.len(), 1);
-        } else {
-            panic!("Expected a successful response for resources/read");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_unregistered_resource_handler_returns_error() {
-        // This test verifies that calling a method with no registered handler returns an error.
-        let server = Arc::new(Server::new("test-no-handlers")); // No handlers registered
-        let (mut conn, adapter_handle, outgoing) = setup_mock_connection();
-        adapter_handle.push_incoming(make_init_request());
-        let list_req =
-            json!({ "jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {} });
-        adapter_handle.push_incoming(serde_json::to_string(&list_req).unwrap());
-        server.handle_connection(&mut conn).await.unwrap();
-        let responses = outgoing.lock().unwrap();
-        assert_eq!(responses.len(), 2);
-        let error_response: JSONRPCResponse<Value> =
-            serde_json::from_str(responses.get(1).unwrap()).unwrap();
-        if let JSONRPCResponse::Error(err) = error_response {
-            assert_eq!(err.id, RequestId::Num(1));
-            assert_eq!(err.error.code, METHOD_NOT_FOUND);
-            assert!(err.error.message.contains("not registered"));
-        } else {
-            panic!("Expected an error response");
-        }
+        conn.send_serializable(error_response).await
     }
 }

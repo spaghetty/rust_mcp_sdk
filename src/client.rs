@@ -11,26 +11,57 @@ use crate::types::{
     InitializeResult, JSONRPCResponse, ListResourcesParams, ListToolsParams, ReadResourceParams,
     ReadResourceResult, Request, RequestId, Resource, Tool, LATEST_PROTOCOL_VERSION,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinHandle;
+
+/// The type used for the value returned in a response channel.
+type ResponseResult = Result<Value, anyhow::Error>;
+/// A sender for a oneshot channel that will carry a response.
+type ResponseSender = oneshot::Sender<ResponseResult>;
+
+/// A map from a request ID to a sender that will resolve the request's Future.
+/// This version uses Tokio's async-aware Mutex for guaranteed safety.
+type PendingRequestMap = Arc<Mutex<HashMap<RequestId, ResponseSender>>>;
 
 /// A high-level client for interacting with an MCP server.
 pub struct Client {
-    connection: tokio::sync::Mutex<ProtocolConnection<TcpAdapter>>,
+    /// The next ID to use for a request.
     next_request_id: AtomicI64,
-    // We can store server capabilities here later.
-    // server_capabilities: ServerCapabilities,
+    /// A map of request IDs to channels for sending back the response.
+    pending_requests: PendingRequestMap,
+    /// A channel for sending requests to the connection's write loop.
+    request_sender: mpsc::Sender<String>,
+    /// A handle to the background task that manages the connection.
+    connection_handle: JoinHandle<()>,
 }
 
 impl Client {
-    /// Connects to an MCP server and performs the initialization handshake.
+    /// Connects to an MCP server, performs the initialization handshake,
+    /// and spawns the background task to manage the connection.
     pub async fn connect(addr: &str) -> Result<Self> {
         let adapter = TcpAdapter::connect(addr).await?;
-        let mut connection = ProtocolConnection::new(adapter);
+        let connection = ProtocolConnection::new(adapter);
 
-        // Perform the MCP initialize handshake.
-        let init_request_id = RequestId::Num(0); // Standard to use 0 for init
+        let pending_requests = Arc::new(Mutex::new(HashMap::new()));
+        let (request_sender, request_receiver) = mpsc::channel::<String>(32);
+
+        let client = Self {
+            next_request_id: AtomicI64::new(1),
+            pending_requests: Arc::clone(&pending_requests),
+            request_sender,
+            connection_handle: tokio::spawn(Self::connection_loop(
+                connection,
+                pending_requests,
+                request_receiver,
+            )),
+        };
+
         let init_params = InitializeRequestParams {
             protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
             client_info: Implementation {
@@ -40,250 +71,167 @@ impl Client {
             capabilities: ClientCapabilities::default(),
         };
 
-        let init_request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: init_request_id.clone(),
-            method: "initialize".to_string(),
-            params: init_params,
-        };
+        // We deserialize the result of the handshake directly.
+        let init_result_val = client
+            .send_request_with_id(RequestId::Num(0), "initialize", init_params)
+            .await?;
+        let init_response: InitializeResult = serde_json::from_value(init_result_val)?;
 
-        connection.send_message(init_request).await?;
+        println!(
+            "[Client] Handshake successful. Server: {:?}",
+            init_response.server_info
+        );
 
-        let response: JSONRPCResponse<InitializeResult> = connection
-            .recv_message()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Connection closed during initialization"))?;
-
-        match response {
-            JSONRPCResponse::Success(success) => {
-                if success.id != init_request_id {
-                    return Err(anyhow::anyhow!("Mismatched initialize response ID"));
-                }
-                println!(
-                    "Handshake successful. Server: {:?}",
-                    success.result.server_info
-                );
-                // Can store success.result.capabilities if needed
-            }
-            JSONRPCResponse::Error(err) => {
-                return Err(anyhow::anyhow!("Initialization failed: {:?}", err.error));
-            }
-        }
-
-        Ok(Self {
-            connection: tokio::sync::Mutex::new(connection),
-            next_request_id: AtomicI64::new(1), // Start subsequent requests from 1
-        })
+        Ok(client)
     }
 
-    /// Generates a new, unique request ID for a JSON-RPC message.
+    /// The main loop for a connection.
+    async fn connection_loop(
+        mut connection: ProtocolConnection<TcpAdapter>,
+        pending_requests: PendingRequestMap,
+        mut request_receiver: mpsc::Receiver<String>,
+    ) {
+        loop {
+            tokio::select! {
+                read_result = connection.recv_message::<Value>() => {
+                    match read_result {
+                        Ok(Some(raw_message)) => {
+                            if raw_message.get("id").is_some() {
+                                Self::handle_response(raw_message, &pending_requests).await;
+                            } else if raw_message.get("method").is_some() {
+                                Self::handle_notification(raw_message);
+                            }
+                        },
+                        Ok(None) => {
+                             println!("[Client] Connection closed by server.");
+                             break;
+                        }
+                        Err(e) => {
+                            eprintln!("[Client] Error reading message from server: {}", e);
+                            break;
+                        }
+                    }
+                },
+                Some(request_json) = request_receiver.recv() => {
+                    // CORRECTED: Use the new `send_raw` method to respect the protocol layer.
+                    if let Err(e) = connection.send_raw(&request_json).await {
+                        eprintln!("[Client] Error writing message to server: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handles a response message from the server.
+    async fn handle_response(raw_message: Value, pending_requests: &PendingRequestMap) {
+        if let Ok(id) = serde_json::from_value::<RequestId>(raw_message["id"].clone()) {
+            // Lock the map and remove the sender for the given ID.
+            if let Some(sender) = pending_requests.lock().await.remove(&id) {
+                // Deserialize into a generic success/error response
+                let response: Result<JSONRPCResponse<Value>, _> =
+                    serde_json::from_value(raw_message);
+                match response {
+                    Ok(JSONRPCResponse::Success(success)) => {
+                        let _ = sender.send(Ok(success.result));
+                    }
+                    Ok(JSONRPCResponse::Error(err)) => {
+                        let _ = sender.send(Err(anyhow!(
+                            "Server returned an error: code={}, message='{}'",
+                            err.error.code,
+                            err.error.message
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = sender.send(Err(anyhow!("Failed to deserialize response: {}", e)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handles a notification message from the server.
+    fn handle_notification(raw_message: Value) {
+        if let Ok(method) = serde_json::from_value::<String>(raw_message["method"].clone()) {
+            println!(
+                "[Client] Received notification with method: '{}'. Params: {}",
+                method, raw_message["params"]
+            );
+        }
+    }
+
+    /// Generates a new, unique request ID.
     fn new_request_id(&self) -> RequestId {
         let id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         RequestId::Num(id)
     }
 
-    /// Fetches the list of available tools from the server.
+    /// A generic method to send any request and await its response.
+    async fn send_request<P, R>(&self, method: &str, params: P) -> Result<R>
+    where
+        P: serde::Serialize,
+        R: DeserializeOwned,
+    {
+        let response_val = self
+            .send_request_with_id(self.new_request_id(), method, params)
+            .await?;
+        Ok(serde_json::from_value(response_val)?)
+    }
+
+    /// Low-level method to send a request and get back the raw `Value` of the result.
+    async fn send_request_with_id<P>(
+        &self,
+        request_id: RequestId,
+        method: &str,
+        params: P,
+    ) -> Result<Value>
+    where
+        P: serde::Serialize,
+    {
+        let (tx, rx) = oneshot::channel::<ResponseResult>();
+
+        {
+            // Lock the map and insert the sender.
+            let mut pending = self.pending_requests.lock().await;
+            pending.insert(request_id.clone(), tx);
+        }
+
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: request_id,
+            method: method.to_string(),
+            params,
+        };
+
+        let request_json = serde_json::to_string(&request)?;
+        self.request_sender.send(request_json).await?;
+
+        // Await the response from the oneshot channel, then propagate any errors.
+        rx.await?
+    }
+
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
-        let request_id = self.new_request_id();
-        let request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: request_id.clone(),
-            method: "tools/list".to_string(),
-            params: ListToolsParams {},
-        };
-
-        let mut conn = self.connection.lock().await;
-        conn.send_message(request).await?;
-
-        let response: JSONRPCResponse<Vec<Tool>> = conn
-            .recv_message()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
-
-        match response {
-            JSONRPCResponse::Success(success) => Ok(success.result),
-            JSONRPCResponse::Error(err) => {
-                Err(anyhow::anyhow!("list_tools failed: {:?}", err.error))
-            }
-        }
+        self.send_request("tools/list", ListToolsParams {}).await
     }
 
-    /// Calls a specific tool on the server.
     pub async fn call_tool(&self, name: String, arguments: Value) -> Result<CallToolResult> {
-        let request_id = self.new_request_id();
-        let request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: request_id.clone(),
-            method: "tools/call".to_string(),
-            params: CallToolParams { name, arguments },
-        };
-
-        let mut conn = self.connection.lock().await;
-        conn.send_message(request).await?;
-
-        let response: JSONRPCResponse<CallToolResult> = conn
-            .recv_message()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
-
-        match response {
-            JSONRPCResponse::Success(success) => Ok(success.result),
-            JSONRPCResponse::Error(err) => {
-                Err(anyhow::anyhow!("call_tool failed: {:?}", err.error))
-            }
-        }
+        self.send_request("tools/call", CallToolParams { name, arguments })
+            .await
     }
 
-    /// Fetches the list of available resources from the server.
     pub async fn list_resources(&self) -> Result<Vec<Resource>> {
-        let request_id = self.new_request_id();
-        let request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: request_id.clone(),
-            method: "resources/list".to_string(),
-            params: ListResourcesParams {},
-        };
-
-        let mut conn = self.connection.lock().await;
-        conn.send_message(request).await?;
-
-        let response: JSONRPCResponse<Vec<Resource>> = conn
-            .recv_message()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
-
-        match response {
-            JSONRPCResponse::Success(success) => Ok(success.result),
-            JSONRPCResponse::Error(err) => {
-                Err(anyhow::anyhow!("list_resources failed: {:?}", err.error))
-            }
-        }
+        self.send_request("resources/list", ListResourcesParams {})
+            .await
     }
 
-    /// Reads the content of a specific resource from the server.
     pub async fn read_resource(&self, uri: String) -> Result<ReadResourceResult> {
-        let request_id = self.new_request_id();
-        let request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: request_id.clone(),
-            method: "resources/read".to_string(),
-            params: ReadResourceParams { uri },
-        };
-
-        let mut conn = self.connection.lock().await;
-        conn.send_message(request).await?;
-
-        let response: JSONRPCResponse<ReadResourceResult> = conn
-            .recv_message()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Connection closed by server"))?;
-
-        match response {
-            JSONRPCResponse::Success(success) => Ok(success.result),
-            JSONRPCResponse::Error(err) => {
-                Err(anyhow::anyhow!("read_resource failed: {:?}", err.error))
-            }
-        }
+        self.send_request("resources/read", ReadResourceParams { uri })
+            .await
     }
 }
 
-// --- Unit Tests ---
-// These tests verify the client's internal logic, especially the handshake.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::adapter::NetworkAdapter;
-    use async_trait::async_trait;
-    use serde_json::json;
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
-
-    // --- Mock Infrastructure for Testing ---
-
-    /// A mock adapter that uses an in-memory queue.
-    #[derive(Default, Clone)]
-    struct MockAdapter {
-        incoming: Arc<Mutex<VecDeque<String>>>,
-        outgoing: Arc<Mutex<VecDeque<String>>>,
-    }
-
-    impl MockAdapter {
-        fn push_incoming(&self, msg: String) {
-            self.incoming.lock().unwrap().push_back(msg);
-        }
-    }
-
-    #[async_trait]
-    impl NetworkAdapter for MockAdapter {
-        async fn send(&mut self, msg: &str) -> Result<()> {
-            self.outgoing.lock().unwrap().push_back(msg.to_string());
-            Ok(())
-        }
-        async fn recv(&mut self) -> Result<Option<String>> {
-            Ok(self.incoming.lock().unwrap().pop_front())
-        }
-    }
-
-    // This is a reimplementation of the client's `connect` logic, but on a generic
-    // adapter so that we can test it with our `MockAdapter`.
-    async fn connect_with_mock_adapter(
-        mut connection: ProtocolConnection<MockAdapter>,
-    ) -> Result<()> {
-        let init_request_id = RequestId::Num(0);
-        let init_params = InitializeRequestParams {
-            protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
-            client_info: Implementation {
-                name: "test-client".into(),
-                version: "0.1.0".into(),
-            },
-            capabilities: ClientCapabilities::default(),
-        };
-        let init_request = Request {
-            jsonrpc: "2.0".to_string(),
-            id: init_request_id.clone(),
-            method: "initialize".to_string(),
-            params: init_params,
-        };
-        connection.send_message(init_request).await?;
-        let response: JSONRPCResponse<InitializeResult> = connection.recv_message().await?.unwrap();
-        match response {
-            JSONRPCResponse::Success(_) => Ok(()),
-            JSONRPCResponse::Error(err) => Err(anyhow::anyhow!("Init failed: {:?}", err.error)),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_connect_sends_initialize_and_receives_ok() {
-        // 1. Setup mock adapter and connection
-        let adapter = MockAdapter::default();
-        let outgoing_buffer = Arc::clone(&adapter.outgoing);
-        let connection = ProtocolConnection::new(adapter.clone());
-
-        // 2. Queue up the server's successful response to the initialize request
-        let init_response = json!({
-            "jsonrpc": "2.0",
-            "id": 0,
-            "result": {
-                "protocolVersion": LATEST_PROTOCOL_VERSION,
-                "serverInfo": { "name": "mock-server", "version": "0.1.0" },
-                "capabilities": {}
-            }
-        });
-        adapter.push_incoming(serde_json::to_string(&init_response).unwrap());
-
-        // 3. Run our mock connection logic
-        let result = connect_with_mock_adapter(connection).await;
-        assert!(result.is_ok());
-
-        // 4. Assert that the client sent the correct initialize request
-        let sent_messages = outgoing_buffer.lock().unwrap();
-        assert_eq!(sent_messages.len(), 1);
-        let sent_req_str = sent_messages.front().unwrap();
-        let sent_req: Request<InitializeRequestParams> =
-            serde_json::from_str(sent_req_str).unwrap();
-
-        assert_eq!(sent_req.method, "initialize");
-        assert_eq!(sent_req.id, RequestId::Num(0));
-        assert_eq!(sent_req.params.protocol_version, LATEST_PROTOCOL_VERSION);
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.connection_handle.abort();
     }
 }

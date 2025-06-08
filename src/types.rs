@@ -144,6 +144,16 @@ pub enum RequestId {
     Str(String),
 }
 
+// --- Notification Types ---
+
+/// A notification from the server to the client. It has no `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notification<T> {
+    pub jsonrpc: String,
+    pub method: String,
+    pub params: T,
+}
+
 // --- JSON-RPC Error Types ---
 pub const METHOD_NOT_FOUND: i32 = -32601;
 
@@ -236,6 +246,11 @@ pub struct ReadResourceParams {
     pub uri: String,
 }
 
+/// Parameters for the `tools/listChanged` notification. Currently empty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListToolsChangedParams {}
+
 // --- Unit Tests ---
 #[cfg(test)]
 mod tests {
@@ -293,6 +308,19 @@ mod tests {
         let json_string = serde_json::to_string(&result).unwrap();
         let deserialized: ReadResourceResult = serde_json::from_str(&json_string).unwrap();
         assert_eq!(result, deserialized);
+    }
+
+    #[test]
+    fn test_notification_deserialization() {
+        let notif_json = r#"
+        {
+            "jsonrpc": "2.0",
+            "method": "tools/listChanged",
+            "params": {}
+        }
+        "#;
+        let notif: Notification<ListToolsChangedParams> = serde_json::from_str(notif_json).unwrap();
+        assert_eq!(notif.method, "tools/listChanged");
     }
 
     #[test]

@@ -40,6 +40,9 @@ pub use types::{
     Content,
     EmbeddedResource,
     ImageContent,
+    // General RPC Types
+    Notification,
+
     ReadResourceResult,
     Resource,
     ResourceContents,
