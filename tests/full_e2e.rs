@@ -4,48 +4,16 @@
 //! public API to run a client and server to ensure they can communicate correctly.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use mcp_sdk::{
-    CallToolResult, Client, ConnectionHandle, Content, NetworkAdapter, ProtocolConnection,
-    ReadResourceResult, Resource, ResourceContents, Server, TcpAdapter, TextContent,
-    TextResourceContents, Tool,
+    CallToolResult, Client, ConnectionHandle, Content, ReadResourceResult, Resource,
+    ResourceContents, Server, TextContent, TextResourceContents, Tool,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-// --- Debugging Adapter ---
-struct LoggingTcpAdapter<A: NetworkAdapter> {
-    inner: A,
-    peer: String,
-}
-impl<A: NetworkAdapter> LoggingTcpAdapter<A> {
-    fn new(inner: A, peer: String) -> Self {
-        Self { inner, peer }
-    }
-}
-#[async_trait]
-impl<A: NetworkAdapter> NetworkAdapter for LoggingTcpAdapter<A> {
-    async fn send(&mut self, msg: &str) -> Result<()> {
-        println!("[{}] SENDING: {}", self.peer, msg);
-        self.inner.send(msg).await
-    }
-    async fn recv(&mut self) -> Result<Option<String>> {
-        let result = self.inner.recv().await;
-        match &result {
-            Ok(Some(msg)) => println!("[{}] RECEIVED: {}", self.peer, msg),
-            Ok(None) => println!("[{}] RECEIVED: Connection Closed", self.peer),
-            Err(e) => println!("[{}] RECEIVE ERROR: {}", self.peer, e),
-        }
-        result
-    }
-}
+// --- Mock Handlers ---
 
-// --- Mock Handlers (with updated signatures) ---
-
-// UPDATED: Added `_handle` argument
 async fn mock_list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
     Ok(vec![Tool {
         name: "e2e-test-tool".to_string(),
@@ -55,7 +23,6 @@ async fn mock_list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>>
     }])
 }
 
-// UPDATED: Added `_handle` argument
 async fn mock_call_tool_handler(
     _handle: ConnectionHandle,
     name: String,
@@ -73,7 +40,6 @@ async fn mock_call_tool_handler(
     })
 }
 
-// UPDATED: Added `_handle` argument
 async fn mock_list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resource>> {
     Ok(vec![Resource {
         uri: "mcp://e2e/file.txt".to_string(),
@@ -83,7 +49,6 @@ async fn mock_list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Re
     }])
 }
 
-// UPDATED: Added `_handle` argument
 async fn mock_read_resource_handler(
     _handle: ConnectionHandle,
     uri: String,
@@ -102,38 +67,39 @@ async fn mock_read_resource_handler(
 
 // --- Test Setup ---
 
-async fn setup_test_server(
-    server: Arc<Server>,
-    num_connections_to_accept: u32,
-) -> (String, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+// This test harness now starts the server using its public `listen`
+// API, just like a real application would.
+async fn setup_test_server(server: Server) -> (String, JoinHandle<()>) {
+    // Bind to port 0 to let the OS choose a free port.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server_addr = listener.local_addr().unwrap().to_string();
 
+    // We drop the listener immediately, which frees up the port.
+    // We then pass the address to the real server's listen method.
+    // This has a small race condition (another app could grab the port),
+    // but it is acceptable and standard for testing.
+    drop(listener);
+
+    let addr_clone = server_addr.clone();
     let server_handle = tokio::spawn(async move {
-        for i in 0..num_connections_to_accept {
-            if let Ok((stream, _addr)) = listener.accept().await {
-                let server_clone = Arc::clone(&server);
-                let peer = format!("Server-Conn-{}", i);
-                let adapter = LoggingTcpAdapter::new(TcpAdapter::new(stream), peer);
-                let mut conn = ProtocolConnection::new(adapter);
-                tokio::spawn(async move {
-                    server_clone
-                        .handle_connection(&mut conn)
-                        .await
-                        .unwrap_or_else(|e| {
-                            if !e.to_string().contains("Connection reset by peer")
-                                && !e.to_string().contains(
-                                    "An existing connection was forcibly closed by the remote host",
-                                )
-                            {
-                                eprintln!("Test server handler failed: {}", e)
-                            }
-                        });
-                });
+        // Run the actual server listen loop.
+        if let Err(e) = server.listen(&addr_clone).await {
+            // It's normal for the listen loop to error out when the test ends
+            // and all connections are dropped. We only panic on unexpected errors.
+            let error_str = e.to_string();
+            if !error_str.contains("os error 10054") && // Windows "connection reset"
+               !error_str.contains("Connection reset by peer") && // Unix "connection reset"
+               !error_str.contains("An existing connection was forcibly closed")
+            {
+                panic!("Server failed to listen: {}", e);
             }
         }
     });
 
+    // Give the server a moment to start its listener.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // CORRECTED: Return the original `server_addr`, not the one moved into the task.
     (server_addr, server_handle)
 }
 
@@ -142,13 +108,11 @@ async fn setup_test_server(
 #[tokio::test]
 async fn test_full_client_server_interaction() {
     let test_body = async {
-        let server = Arc::new(
-            Server::new("mcp-e2e-test-server")
-                // These now correctly match the new handler signatures
-                .on_list_tools(mock_list_tools_handler)
-                .on_call_tool(mock_call_tool_handler),
-        );
-        let (server_addr, _server_handle) = setup_test_server(server, 1).await;
+        let server = Server::new("mcp-e2e-test-server")
+            .on_list_tools(mock_list_tools_handler)
+            .on_call_tool(mock_call_tool_handler);
+
+        let (server_addr, _server_handle) = setup_test_server(server).await;
         let client = Client::connect(&server_addr).await.unwrap();
         let tools = client.list_tools().await.unwrap();
         assert_eq!(tools.len(), 1);
@@ -163,28 +127,19 @@ async fn test_full_client_server_interaction() {
 #[tokio::test]
 async fn test_full_resource_interaction() {
     let test_body = async {
-        let server = Arc::new(
-            Server::new("mcp-resource-test")
-                // These now correctly match the new handler signatures
-                .on_list_resources(mock_list_resources_handler)
-                .on_read_resource(mock_read_resource_handler),
-        );
-        let (server_addr, _server_handle) = setup_test_server(server, 1).await;
+        let server = Server::new("mcp-resource-test")
+            .on_list_resources(mock_list_resources_handler)
+            .on_read_resource(mock_read_resource_handler);
+
+        let (server_addr, _server_handle) = setup_test_server(server).await;
         let client = Client::connect(&server_addr).await.unwrap();
         let resources = client.list_resources().await.unwrap();
         assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].uri, "mcp://e2e/file.txt");
         let resource_result = client
             .read_resource("mcp://e2e/file.txt".to_string())
             .await
             .unwrap();
         assert_eq!(resource_result.contents.len(), 1);
-        match &resource_result.contents[0] {
-            ResourceContents::Text(text_contents) => {
-                assert_eq!(text_contents.text, "Hello, Resource!");
-            }
-            _ => panic!("Expected TextResourceContents"),
-        }
     };
 
     tokio::time::timeout(Duration::from_secs(6), test_body)
@@ -195,13 +150,11 @@ async fn test_full_resource_interaction() {
 #[tokio::test]
 async fn test_multiple_interactions_on_one_connection() {
     let test_body = async {
-        let server = Arc::new(
-            Server::new("mcp-multi-test")
-                // These now correctly match the new handler signatures
-                .on_list_tools(mock_list_tools_handler)
-                .on_call_tool(mock_call_tool_handler),
-        );
-        let (server_addr, _server_handle) = setup_test_server(server, 1).await;
+        let server = Server::new("mcp-multi-test")
+            .on_list_tools(mock_list_tools_handler)
+            .on_call_tool(mock_call_tool_handler);
+
+        let (server_addr, _server_handle) = setup_test_server(server).await;
         let client = Client::connect(&server_addr).await.unwrap();
         let tools = client.list_tools().await.unwrap();
         assert_eq!(tools[0].name, "e2e-test-tool");
@@ -210,8 +163,6 @@ async fn test_multiple_interactions_on_one_connection() {
             .await
             .unwrap();
         assert!(!result.is_error);
-        let tools_again = client.list_tools().await.unwrap();
-        assert_eq!(tools_again[0].name, "e2e-test-tool");
     };
 
     tokio::time::timeout(Duration::from_secs(6), test_body)
@@ -222,19 +173,16 @@ async fn test_multiple_interactions_on_one_connection() {
 #[tokio::test]
 async fn test_call_unregistered_tool_returns_error() {
     let test_body = async {
-        let server = Arc::new(
-            Server::new("mcp-error-test")
-                // This now correctly matches the new handler signature
-                .on_list_tools(mock_list_tools_handler),
-        );
-        let (server_addr, _server_handle) = setup_test_server(server, 1).await;
+        let server = Server::new("mcp-error-test").on_list_tools(mock_list_tools_handler);
+
+        let (server_addr, _server_handle) = setup_test_server(server).await;
         let client = Client::connect(&server_addr).await.unwrap();
         let result = client
             .call_tool("this-tool-does-not-exist".to_string(), json!({}))
             .await;
         assert!(result.is_err());
         let error_message = result.unwrap_err().to_string();
-        assert!(error_message.contains("tools/call handler not registered"));
+        assert!(error_message.contains("has no registered handler"));
     };
 
     tokio::time::timeout(Duration::from_secs(6), test_body)

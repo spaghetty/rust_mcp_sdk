@@ -265,40 +265,51 @@ mod tests {
     use crate::types::ListToolsChangedParams;
     use async_trait::async_trait;
     use serde_json::json;
-    use std::collections::VecDeque;
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
-    use tokio::sync::Mutex as TokioMutex;
+    use tokio::sync::{mpsc as async_mpsc, Mutex as TokioMutex};
 
-    #[derive(Default, Clone)]
+    // --- Mock Adapter for Client Tests ---
+    #[derive(Clone)]
     struct MockAdapter {
-        incoming: Arc<TokioMutex<VecDeque<String>>>,
-        outgoing: Arc<TokioMutex<VecDeque<String>>>,
+        incoming_tx: async_mpsc::Sender<String>,
+        incoming_rx: Arc<TokioMutex<async_mpsc::Receiver<String>>>,
+        outgoing: Arc<TokioMutex<Vec<String>>>,
     }
 
     impl MockAdapter {
+        fn new() -> Self {
+            let (incoming_tx, incoming_rx) = async_mpsc::channel(32);
+            Self {
+                incoming_tx,
+                incoming_rx: Arc::new(TokioMutex::new(incoming_rx)),
+                outgoing: Arc::new(TokioMutex::new(Vec::new())),
+            }
+        }
         async fn push_incoming(&self, msg: String) {
-            self.incoming.lock().await.push_back(msg);
+            self.incoming_tx.send(msg).await.unwrap();
         }
         async fn pop_outgoing(&self) -> Option<String> {
-            self.outgoing.lock().await.pop_front()
+            self.outgoing.lock().await.pop()
         }
     }
 
     #[async_trait]
     impl NetworkAdapter for MockAdapter {
         async fn send(&mut self, msg: &str) -> Result<()> {
-            self.outgoing.lock().await.push_back(msg.to_string());
+            self.outgoing.lock().await.push(msg.to_string());
             Ok(())
         }
 
         async fn recv(&mut self) -> Result<Option<String>> {
-            Ok(self.incoming.lock().await.pop_front())
+            Ok(self.incoming_rx.lock().await.recv().await)
         }
     }
 
+    // --- Test Harness ---
     struct TestHarness {
         adapter: MockAdapter,
+        // CORRECTED: The harness now holds onto the state for tests to use.
         pending_requests: PendingRequestMap,
         notification_handlers: NotificationHandlerMap,
         request_sender: mpsc::Sender<String>,
@@ -306,16 +317,20 @@ mod tests {
     }
 
     fn setup_loop_test() -> TestHarness {
-        let adapter = MockAdapter::default();
+        let adapter = MockAdapter::new();
         let connection = ProtocolConnection::new(adapter.clone());
         let pending_requests = Arc::new(Mutex::new(HashMap::new()));
         let notification_handlers = Arc::new(DashMap::new());
         let (request_sender, request_receiver) = mpsc::channel::<String>(32);
 
+        // CORRECTED: Clone the Arcs *before* moving them into the task.
+        let pending_req_clone = Arc::clone(&pending_requests);
+        let notif_handlers_clone = Arc::clone(&notification_handlers);
+
         let connection_handle = tokio::spawn(Client::connection_loop(
             connection,
-            Arc::clone(&pending_requests),
-            Arc::clone(&notification_handlers),
+            pending_req_clone,
+            notif_handlers_clone,
             request_receiver,
         ));
 
@@ -328,12 +343,15 @@ mod tests {
         }
     }
 
+    // --- Tests ---
+
     #[tokio::test]
     async fn test_connection_loop_handles_response() {
         let harness = setup_loop_test();
         let (tx, rx) = oneshot::channel::<ResponseResult>();
 
         let request_id = RequestId::Num(1);
+        // CORRECTED: Access the state via the harness struct.
         harness.pending_requests.lock().await.insert(request_id, tx);
 
         let response_json = json!({
@@ -362,6 +380,7 @@ mod tests {
             let _params: ListToolsChangedParams = serde_json::from_value(params).unwrap();
             handler_was_called_clone.store(true, Ordering::SeqCst);
         });
+        // CORRECTED: Access the state via the harness struct.
         harness
             .notification_handlers
             .insert("notifications/tools/list_changed".to_string(), handler);
@@ -399,23 +418,9 @@ mod tests {
             .await
             .unwrap();
 
-        // CORRECTED: Poll for the message instead of using a fixed sleep.
-        let max_wait = Duration::from_secs(1);
-        let interval = Duration::from_millis(10);
-        let start = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let mut sent_message = None;
-        while start.elapsed() < max_wait {
-            if let Some(msg) = harness.adapter.pop_outgoing().await {
-                sent_message = Some(msg);
-                break;
-            }
-            tokio::time::sleep(interval).await;
-        }
-
-        assert_eq!(
-            sent_message.expect("Client loop did not send a message within the timeout"),
-            request_json
-        );
+        let sent_message = harness.adapter.pop_outgoing().await.unwrap();
+        assert_eq!(sent_message, request_json);
     }
 }

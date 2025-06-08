@@ -24,6 +24,18 @@ pub struct Tool {
     pub annotations: Option<ToolAnnotations>,
 }
 
+// CORRECTED: Manually implement Default because `Value` does not have a default.
+impl Default for Tool {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: None,
+            input_schema: Value::Object(Default::default()),
+            annotations: None,
+        }
+    }
+}
+
 /// A known resource that the server is capable of reading.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +49,8 @@ pub struct Resource {
 }
 
 /// The server's response to a `tools/call` request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// CORRECTED: Added Default derive.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
     pub content: Vec<Content>,
