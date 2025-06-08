@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use mcp_sdk::{Client, Content, ResourceContents};
+use mcp_sdk::{Client, ResourceContents};
 use serde_json::json;
 
 // --- Command-Line Argument Parsing ---
