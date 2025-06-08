@@ -31,7 +31,7 @@ pub(crate) mod types;
 pub use adapter::{NetworkAdapter, TcpAdapter};
 pub use client::Client;
 pub use protocol::ProtocolConnection;
-pub use server::Server;
+pub use server::{ConnectionHandle, Server};
 pub use types::{
     // Resource-related types
     BlobResourceContents,
@@ -40,6 +40,7 @@ pub use types::{
     Content,
     EmbeddedResource,
     ImageContent,
+    ListToolsChangedParams, // UPDATED: Added this type to the public API
     // General RPC Types
     Notification,
 

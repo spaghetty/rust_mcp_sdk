@@ -10,6 +10,7 @@ license = "MIT"
 [workspace]
 members = [
   ".",
+  "examples/notification_client",
   "examples/simple_client",
   "examples/simple_server",
 ]

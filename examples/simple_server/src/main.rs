@@ -1,48 +1,87 @@
-//! An example MCP server that provides a `fetch` tool and resource handling.
+//! An example MCP server that provides multiple tools and resource handling.
 
 use anyhow::Result;
 use mcp_sdk::{
-    CallToolResult, Content, ReadResourceResult, Resource, ResourceContents, Server, TextContent,
-    TextResourceContents, Tool,
+    CallToolResult, ConnectionHandle, Content, ListToolsChangedParams, Notification,
+    ReadResourceResult, Resource, ResourceContents, Server, TextContent, TextResourceContents,
+    Tool,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
 // --- Tool Handler Implementations ---
 
-async fn list_fetch_tool() -> Result<Vec<Tool>> {
-    println!("[Server] Handler invoked: list_fetch_tool");
-    Ok(vec![Tool {
-        name: "fetch".to_string(),
-        description: Some("Fetches a website and returns its content".to_string()),
-        input_schema: json!({
-            "type": "object",
-            "required": ["url"],
-            "properties": { "url": { "type": "string", "description": "URL to fetch" } },
-        }),
-        annotations: None,
-    }])
+// UPDATED: This handler now lists all available tools.
+async fn list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
+    println!("[Server] Handler invoked: list_tools_handler");
+    Ok(vec![
+        Tool {
+            name: "fetch".to_string(),
+            description: Some("Fetches a website and returns its content".to_string()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": { "url": { "type": "string", "description": "URL to fetch" } },
+            }),
+            annotations: None,
+        },
+        Tool {
+            name: "trigger_notification".to_string(),
+            description: Some(
+                "Asks the server to send a 'tools/listChanged' notification.".to_string(),
+            ),
+            input_schema: serde_json::json!({ "type": "object" }),
+            annotations: None,
+        },
+    ])
 }
 
-async fn call_fetch_tool(name: String, args: Value) -> Result<CallToolResult> {
+// UPDATED: This single handler now dispatches based on the tool name.
+async fn call_tool_handler(
+    handle: ConnectionHandle,
+    name: String,
+    args: Value,
+) -> Result<CallToolResult> {
     println!(
-        "[Server] Handler invoked: call_fetch_tool with name='{}'",
+        "[Server] Handler invoked: call_tool_handler with name='{}'",
         name
     );
-    let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
-    println!("[Server] Simulating fetch for URL: {}", url);
-    Ok(CallToolResult {
-        content: vec![Content::Text(TextContent {
-            r#type: "text".to_string(),
-            text: format!("Mock content of {}", url),
-        })],
-        is_error: false,
-    })
+
+    match name.as_str() {
+        "fetch" => {
+            let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
+            println!("[Server] Simulating fetch for URL: {}", url);
+            Ok(CallToolResult {
+                content: vec![Content::Text(TextContent {
+                    r#type: "text".to_string(),
+                    text: format!("Mock content of {}", url),
+                })],
+                is_error: false,
+            })
+        }
+        "trigger_notification" => {
+            println!("[Server] Sending 'tools/listChanged' notification...");
+            handle
+                .send_notification(Notification {
+                    jsonrpc: "2.0".to_string(),
+                    method: "notifications/tools/list_changed".to_string(),
+                    params: ListToolsChangedParams {},
+                })
+                .await?;
+            Ok(CallToolResult {
+                content: vec![Content::Text(TextContent {
+                    r#type: "text".to_string(),
+                    text: "Notification sent!".to_string(),
+                })],
+                is_error: false,
+            })
+        }
+        _ => Err(anyhow::anyhow!("Unknown tool called: {}", name)),
+    }
 }
 
-// --- Resource Handler Implementations ---
+// --- Resource Handler Implementations (Unchanged) ---
 
-async fn list_resources_handler() -> Result<Vec<Resource>> {
-    println!("[Server] Handler invoked: list_resources_handler");
+async fn list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resource>> {
     Ok(vec![Resource {
         uri: "mcp://example/hello.txt".to_string(),
         name: "hello.txt".to_string(),
@@ -51,11 +90,10 @@ async fn list_resources_handler() -> Result<Vec<Resource>> {
     }])
 }
 
-async fn read_resource_handler(uri: String) -> Result<ReadResourceResult> {
-    println!(
-        "[Server] Handler invoked: read_resource_handler for uri: '{}'",
-        uri
-    );
+async fn read_resource_handler(
+    _handle: ConnectionHandle,
+    uri: String,
+) -> Result<ReadResourceResult> {
     if uri != "mcp://example/hello.txt" {
         return Err(anyhow::anyhow!("Unknown resource URI: {}", uri));
     }
@@ -72,10 +110,10 @@ async fn read_resource_handler(uri: String) -> Result<ReadResourceResult> {
 async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
 
-    // Create a server and register all handlers unconditionally.
-    let server = Server::new("mcp-unified-example-server")
-        .on_list_tools(list_fetch_tool)
-        .on_call_tool(call_fetch_tool)
+    // UPDATED: Register the new combined handlers.
+    let server = Server::new("mcp-multi-tool-server")
+        .on_list_tools(list_tools_handler)
+        .on_call_tool(call_tool_handler)
         .on_list_resources(list_resources_handler)
         .on_read_resource(read_resource_handler);
 

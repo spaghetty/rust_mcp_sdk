@@ -6,8 +6,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use mcp_sdk::{
-    CallToolResult, Client, Content, NetworkAdapter, ProtocolConnection, ReadResourceResult,
-    Resource, ResourceContents, Server, TcpAdapter, TextContent, TextResourceContents, Tool,
+    CallToolResult, Client, ConnectionHandle, Content, NetworkAdapter, ProtocolConnection,
+    ReadResourceResult, Resource, ResourceContents, Server, TcpAdapter, TextContent,
+    TextResourceContents, Tool,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -15,27 +16,22 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-// --- New Logging Adapter for Debugging ---
-
-/// A wrapper around a NetworkAdapter that logs all messages sent and received.
+// --- Debugging Adapter ---
 struct LoggingTcpAdapter<A: NetworkAdapter> {
     inner: A,
     peer: String,
 }
-
 impl<A: NetworkAdapter> LoggingTcpAdapter<A> {
     fn new(inner: A, peer: String) -> Self {
         Self { inner, peer }
     }
 }
-
 #[async_trait]
 impl<A: NetworkAdapter> NetworkAdapter for LoggingTcpAdapter<A> {
     async fn send(&mut self, msg: &str) -> Result<()> {
         println!("[{}] SENDING: {}", self.peer, msg);
         self.inner.send(msg).await
     }
-
     async fn recv(&mut self) -> Result<Option<String>> {
         let result = self.inner.recv().await;
         match &result {
@@ -47,9 +43,10 @@ impl<A: NetworkAdapter> NetworkAdapter for LoggingTcpAdapter<A> {
     }
 }
 
-// --- Mock Handlers ---
+// --- Mock Handlers (with updated signatures) ---
 
-async fn mock_list_tools_handler() -> Result<Vec<Tool>> {
+// UPDATED: Added `_handle` argument
+async fn mock_list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
     Ok(vec![Tool {
         name: "e2e-test-tool".to_string(),
         description: Some("An end-to-end test tool".to_string()),
@@ -58,7 +55,12 @@ async fn mock_list_tools_handler() -> Result<Vec<Tool>> {
     }])
 }
 
-async fn mock_call_tool_handler(name: String, _args: Value) -> Result<CallToolResult> {
+// UPDATED: Added `_handle` argument
+async fn mock_call_tool_handler(
+    _handle: ConnectionHandle,
+    name: String,
+    _args: Value,
+) -> Result<CallToolResult> {
     if name != "e2e-test-tool" {
         return Err(anyhow::anyhow!("Unknown tool in e2e test"));
     }
@@ -71,7 +73,8 @@ async fn mock_call_tool_handler(name: String, _args: Value) -> Result<CallToolRe
     })
 }
 
-async fn mock_list_resources_handler() -> Result<Vec<Resource>> {
+// UPDATED: Added `_handle` argument
+async fn mock_list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resource>> {
     Ok(vec![Resource {
         uri: "mcp://e2e/file.txt".to_string(),
         name: "file.txt".to_string(),
@@ -80,7 +83,11 @@ async fn mock_list_resources_handler() -> Result<Vec<Resource>> {
     }])
 }
 
-async fn mock_read_resource_handler(uri: String) -> Result<ReadResourceResult> {
+// UPDATED: Added `_handle` argument
+async fn mock_read_resource_handler(
+    _handle: ConnectionHandle,
+    uri: String,
+) -> Result<ReadResourceResult> {
     if uri != "mcp://e2e/file.txt" {
         return Err(anyhow::anyhow!("Unknown resource in e2e test"));
     }
@@ -106,12 +113,9 @@ async fn setup_test_server(
         for i in 0..num_connections_to_accept {
             if let Ok((stream, _addr)) = listener.accept().await {
                 let server_clone = Arc::clone(&server);
-
-                // MODIFIED: Wrap the standard TcpAdapter with our logging one.
                 let peer = format!("Server-Conn-{}", i);
                 let adapter = LoggingTcpAdapter::new(TcpAdapter::new(stream), peer);
                 let mut conn = ProtocolConnection::new(adapter);
-
                 tokio::spawn(async move {
                     server_clone
                         .handle_connection(&mut conn)
@@ -122,7 +126,6 @@ async fn setup_test_server(
                                     "An existing connection was forcibly closed by the remote host",
                                 )
                             {
-                                // This is the error we were seeing before.
                                 eprintln!("Test server handler failed: {}", e)
                             }
                         });
@@ -141,6 +144,7 @@ async fn test_full_client_server_interaction() {
     let test_body = async {
         let server = Arc::new(
             Server::new("mcp-e2e-test-server")
+                // These now correctly match the new handler signatures
                 .on_list_tools(mock_list_tools_handler)
                 .on_call_tool(mock_call_tool_handler),
         );
@@ -161,6 +165,7 @@ async fn test_full_resource_interaction() {
     let test_body = async {
         let server = Arc::new(
             Server::new("mcp-resource-test")
+                // These now correctly match the new handler signatures
                 .on_list_resources(mock_list_resources_handler)
                 .on_read_resource(mock_read_resource_handler),
         );
@@ -192,6 +197,7 @@ async fn test_multiple_interactions_on_one_connection() {
     let test_body = async {
         let server = Arc::new(
             Server::new("mcp-multi-test")
+                // These now correctly match the new handler signatures
                 .on_list_tools(mock_list_tools_handler)
                 .on_call_tool(mock_call_tool_handler),
         );
@@ -216,7 +222,11 @@ async fn test_multiple_interactions_on_one_connection() {
 #[tokio::test]
 async fn test_call_unregistered_tool_returns_error() {
     let test_body = async {
-        let server = Arc::new(Server::new("mcp-error-test").on_list_tools(mock_list_tools_handler));
+        let server = Arc::new(
+            Server::new("mcp-error-test")
+                // This now correctly matches the new handler signature
+                .on_list_tools(mock_list_tools_handler),
+        );
         let (server_addr, _server_handle) = setup_test_server(server, 1).await;
         let client = Client::connect(&server_addr).await.unwrap();
         let result = client

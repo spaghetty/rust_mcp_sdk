@@ -4,7 +4,7 @@
 //! an MCP server. It handles connection, initialization, request/response lifecycle,
 //! and error handling, abstracting away the underlying protocol and transport details.
 
-use crate::adapter::TcpAdapter;
+use crate::adapter::{NetworkAdapter, TcpAdapter};
 use crate::protocol::ProtocolConnection;
 use crate::types::{
     CallToolParams, CallToolResult, ClientCapabilities, Implementation, InitializeRequestParams,
@@ -12,6 +12,7 @@ use crate::types::{
     ReadResourceResult, Request, RequestId, Resource, Tool, LATEST_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Result};
+use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -20,35 +21,28 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 
-/// The type used for the value returned in a response channel.
+// --- Type Aliases ---
 type ResponseResult = Result<Value, anyhow::Error>;
-/// A sender for a oneshot channel that will carry a response.
 type ResponseSender = oneshot::Sender<ResponseResult>;
-
-/// A map from a request ID to a sender that will resolve the request's Future.
-/// This version uses Tokio's async-aware Mutex for guaranteed safety.
 type PendingRequestMap = Arc<Mutex<HashMap<RequestId, ResponseSender>>>;
+type NotificationHandler = Arc<dyn Fn(Value) + Send + Sync>;
+type NotificationHandlerMap = Arc<DashMap<String, NotificationHandler>>;
 
-/// A high-level client for interacting with an MCP server.
 pub struct Client {
-    /// The next ID to use for a request.
     next_request_id: AtomicI64,
-    /// A map of request IDs to channels for sending back the response.
     pending_requests: PendingRequestMap,
-    /// A channel for sending requests to the connection's write loop.
     request_sender: mpsc::Sender<String>,
-    /// A handle to the background task that manages the connection.
     connection_handle: JoinHandle<()>,
+    notification_handlers: NotificationHandlerMap,
 }
 
 impl Client {
-    /// Connects to an MCP server, performs the initialization handshake,
-    /// and spawns the background task to manage the connection.
     pub async fn connect(addr: &str) -> Result<Self> {
         let adapter = TcpAdapter::connect(addr).await?;
         let connection = ProtocolConnection::new(adapter);
 
         let pending_requests = Arc::new(Mutex::new(HashMap::new()));
+        let notification_handlers = Arc::new(DashMap::new());
         let (request_sender, request_receiver) = mpsc::channel::<String>(32);
 
         let client = Self {
@@ -58,8 +52,10 @@ impl Client {
             connection_handle: tokio::spawn(Self::connection_loop(
                 connection,
                 pending_requests,
+                Arc::clone(&notification_handlers),
                 request_receiver,
             )),
+            notification_handlers,
         };
 
         let init_params = InitializeRequestParams {
@@ -68,10 +64,14 @@ impl Client {
                 name: "mcp-rust-sdk-client".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            capabilities: ClientCapabilities::default(),
+            capabilities: ClientCapabilities {
+                tools: Some(crate::types::ToolsCapability {
+                    list_changed: Some(true),
+                }),
+                ..Default::default()
+            },
         };
 
-        // We deserialize the result of the handshake directly.
         let init_result_val = client
             .send_request_with_id(RequestId::Num(0), "initialize", init_params)
             .await?;
@@ -85,21 +85,32 @@ impl Client {
         Ok(client)
     }
 
-    /// The main loop for a connection.
-    async fn connection_loop(
-        mut connection: ProtocolConnection<TcpAdapter>,
+    async fn connection_loop<A>(
+        mut connection: ProtocolConnection<A>,
         pending_requests: PendingRequestMap,
+        notification_handlers: NotificationHandlerMap,
         mut request_receiver: mpsc::Receiver<String>,
-    ) {
+    ) where
+        A: NetworkAdapter + Send + 'static,
+    {
         loop {
             tokio::select! {
+                // CORRECTED: Prioritize sending outgoing messages over waiting for incoming ones.
+                biased;
+
+                Some(request_json) = request_receiver.recv() => {
+                    if let Err(e) = connection.send_raw(&request_json).await {
+                        eprintln!("[Client] Error writing message to server: {}", e);
+                        break;
+                    }
+                },
                 read_result = connection.recv_message::<Value>() => {
                     match read_result {
                         Ok(Some(raw_message)) => {
                             if raw_message.get("id").is_some() {
                                 Self::handle_response(raw_message, &pending_requests).await;
                             } else if raw_message.get("method").is_some() {
-                                Self::handle_notification(raw_message);
+                                Self::handle_notification(raw_message, notification_handlers.clone());
                             }
                         },
                         Ok(None) => {
@@ -112,23 +123,13 @@ impl Client {
                         }
                     }
                 },
-                Some(request_json) = request_receiver.recv() => {
-                    // CORRECTED: Use the new `send_raw` method to respect the protocol layer.
-                    if let Err(e) = connection.send_raw(&request_json).await {
-                        eprintln!("[Client] Error writing message to server: {}", e);
-                        break;
-                    }
-                }
             }
         }
     }
 
-    /// Handles a response message from the server.
     async fn handle_response(raw_message: Value, pending_requests: &PendingRequestMap) {
         if let Ok(id) = serde_json::from_value::<RequestId>(raw_message["id"].clone()) {
-            // Lock the map and remove the sender for the given ID.
             if let Some(sender) = pending_requests.lock().await.remove(&id) {
-                // Deserialize into a generic success/error response
                 let response: Result<JSONRPCResponse<Value>, _> =
                     serde_json::from_value(raw_message);
                 match response {
@@ -150,23 +151,48 @@ impl Client {
         }
     }
 
-    /// Handles a notification message from the server.
-    fn handle_notification(raw_message: Value) {
-        if let Ok(method) = serde_json::from_value::<String>(raw_message["method"].clone()) {
-            println!(
-                "[Client] Received notification with method: '{}'. Params: {}",
-                method, raw_message["params"]
-            );
+    fn handle_notification(raw_message: Value, handlers: NotificationHandlerMap) {
+        if let Some(method) = raw_message.get("method").and_then(Value::as_str) {
+            if let Some(handler) = handlers.get(method) {
+                let handler = handler.clone();
+                let params = raw_message.get("params").cloned().unwrap_or(Value::Null);
+
+                tokio::spawn(async move {
+                    (handler)(params);
+                });
+            } else {
+                println!("[Client] Received unhandled notification: {}", method);
+            }
         }
     }
 
-    /// Generates a new, unique request ID.
+    pub fn on_tools_list_changed<F, P>(&self, handler: F)
+    where
+        F: Fn(P) + Send + Sync + 'static,
+        P: DeserializeOwned,
+    {
+        let wrapped_handler: NotificationHandler =
+            Arc::new(
+                move |params: Value| match serde_json::from_value::<P>(params) {
+                    Ok(typed_params) => (handler)(typed_params),
+                    Err(e) => eprintln!(
+                        "[Client] Failed to deserialize params for 'tools/listChanged': {}",
+                        e
+                    ),
+                },
+            );
+
+        self.notification_handlers.insert(
+            "notifications/tools/list_changed".to_string(),
+            wrapped_handler,
+        );
+    }
+
     fn new_request_id(&self) -> RequestId {
         let id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         RequestId::Num(id)
     }
 
-    /// A generic method to send any request and await its response.
     async fn send_request<P, R>(&self, method: &str, params: P) -> Result<R>
     where
         P: serde::Serialize,
@@ -178,7 +204,6 @@ impl Client {
         Ok(serde_json::from_value(response_val)?)
     }
 
-    /// Low-level method to send a request and get back the raw `Value` of the result.
     async fn send_request_with_id<P>(
         &self,
         request_id: RequestId,
@@ -189,9 +214,7 @@ impl Client {
         P: serde::Serialize,
     {
         let (tx, rx) = oneshot::channel::<ResponseResult>();
-
         {
-            // Lock the map and insert the sender.
             let mut pending = self.pending_requests.lock().await;
             pending.insert(request_id.clone(), tx);
         }
@@ -206,7 +229,6 @@ impl Client {
         let request_json = serde_json::to_string(&request)?;
         self.request_sender.send(request_json).await?;
 
-        // Await the response from the oneshot channel, then propagate any errors.
         rx.await?
     }
 
@@ -233,5 +255,167 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         self.connection_handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::NetworkAdapter;
+    use crate::types::ListToolsChangedParams;
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+    use tokio::sync::Mutex as TokioMutex;
+
+    #[derive(Default, Clone)]
+    struct MockAdapter {
+        incoming: Arc<TokioMutex<VecDeque<String>>>,
+        outgoing: Arc<TokioMutex<VecDeque<String>>>,
+    }
+
+    impl MockAdapter {
+        async fn push_incoming(&self, msg: String) {
+            self.incoming.lock().await.push_back(msg);
+        }
+        async fn pop_outgoing(&self) -> Option<String> {
+            self.outgoing.lock().await.pop_front()
+        }
+    }
+
+    #[async_trait]
+    impl NetworkAdapter for MockAdapter {
+        async fn send(&mut self, msg: &str) -> Result<()> {
+            self.outgoing.lock().await.push_back(msg.to_string());
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Option<String>> {
+            Ok(self.incoming.lock().await.pop_front())
+        }
+    }
+
+    struct TestHarness {
+        adapter: MockAdapter,
+        pending_requests: PendingRequestMap,
+        notification_handlers: NotificationHandlerMap,
+        request_sender: mpsc::Sender<String>,
+        _connection_handle: JoinHandle<()>,
+    }
+
+    fn setup_loop_test() -> TestHarness {
+        let adapter = MockAdapter::default();
+        let connection = ProtocolConnection::new(adapter.clone());
+        let pending_requests = Arc::new(Mutex::new(HashMap::new()));
+        let notification_handlers = Arc::new(DashMap::new());
+        let (request_sender, request_receiver) = mpsc::channel::<String>(32);
+
+        let connection_handle = tokio::spawn(Client::connection_loop(
+            connection,
+            Arc::clone(&pending_requests),
+            Arc::clone(&notification_handlers),
+            request_receiver,
+        ));
+
+        TestHarness {
+            adapter,
+            pending_requests,
+            notification_handlers,
+            request_sender,
+            _connection_handle: connection_handle,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connection_loop_handles_response() {
+        let harness = setup_loop_test();
+        let (tx, rx) = oneshot::channel::<ResponseResult>();
+
+        let request_id = RequestId::Num(1);
+        harness.pending_requests.lock().await.insert(request_id, tx);
+
+        let response_json = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "status": "ok" }
+        })
+        .to_string();
+        harness.adapter.push_incoming(response_json).await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("Test timed out")
+            .expect("Oneshot channel failed");
+
+        assert_eq!(result.unwrap(), json!({ "status": "ok" }));
+    }
+
+    #[tokio::test]
+    async fn test_connection_loop_handles_notification() {
+        let harness = setup_loop_test();
+        let handler_was_called = Arc::new(AtomicBool::new(false));
+        let handler_was_called_clone = Arc::clone(&handler_was_called);
+
+        let handler: NotificationHandler = Arc::new(move |params: Value| {
+            let _params: ListToolsChangedParams = serde_json::from_value(params).unwrap();
+            handler_was_called_clone.store(true, Ordering::SeqCst);
+        });
+        harness
+            .notification_handlers
+            .insert("notifications/tools/list_changed".to_string(), handler);
+
+        let notification_json = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/tools/list_changed",
+            "params": {}
+        })
+        .to_string();
+        harness.adapter.push_incoming(notification_json).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            handler_was_called.load(Ordering::SeqCst),
+            "Notification handler was not called"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connection_loop_sends_requests() {
+        let harness = setup_loop_test();
+
+        let request_json = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        })
+        .to_string();
+        harness
+            .request_sender
+            .send(request_json.clone())
+            .await
+            .unwrap();
+
+        // CORRECTED: Poll for the message instead of using a fixed sleep.
+        let max_wait = Duration::from_secs(1);
+        let interval = Duration::from_millis(10);
+        let start = std::time::Instant::now();
+
+        let mut sent_message = None;
+        while start.elapsed() < max_wait {
+            if let Some(msg) = harness.adapter.pop_outgoing().await {
+                sent_message = Some(msg);
+                break;
+            }
+            tokio::time::sleep(interval).await;
+        }
+
+        assert_eq!(
+            sent_message.expect("Client loop did not send a message within the timeout"),
+            request_json
+        );
     }
 }

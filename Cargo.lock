@@ -267,6 +267,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "notification-client-example"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mcp-sdk",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "object"
 version = "0.36.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
