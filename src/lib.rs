@@ -19,12 +19,10 @@
 // --- Module Declarations ---
 
 pub(crate) mod adapter;
-pub(crate) mod protocol;
-pub(crate) mod types;
-
-// UPDATED: Declare the new client module structure.
 pub mod client;
+pub(crate) mod protocol;
 pub mod server;
+pub mod types;
 
 // --- Public API Re-exports ---
 pub use adapter::{NetworkAdapter, TcpAdapter};
@@ -32,22 +30,7 @@ pub use client::Client;
 pub use protocol::ProtocolConnection;
 pub use server::{ConnectionHandle, Server};
 pub use types::{
-    // Resource-related types
-    BlobResourceContents,
-    // Tool-related types
-    CallToolResult,
-    Content,
-    EmbeddedResource,
-    ImageContent,
-    ListToolsChangedParams,
-    // General RPC Types
-    Notification,
-
-    ReadResourceResult,
-    Resource,
-    ResourceContents,
-    TextContent,
-    TextResourceContents,
-    Tool,
-    ToolAnnotations,
+    BlobResourceContents, CallToolResult, Content, GetPromptResult, ListPromptsResult,
+    ListToolsChangedParams, Notification, Prompt, PromptArgument, PromptMessage,
+    ReadResourceResult, Resource, ResourceContents, TextResourceContents, Tool, ToolAnnotations,
 };

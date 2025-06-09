@@ -5,8 +5,9 @@
 
 use anyhow::Result;
 use mcp_sdk::{
-    CallToolResult, Client, ConnectionHandle, Content, ReadResourceResult, Resource,
-    ResourceContents, Server, TextContent, TextResourceContents, Tool,
+    CallToolResult, Client, ConnectionHandle, Content, GetPromptResult, ListPromptsResult, Prompt,
+    PromptMessage, ReadResourceResult, Resource, ResourceContents, Server, TextResourceContents,
+    Tool,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -32,10 +33,9 @@ async fn mock_call_tool_handler(
         return Err(anyhow::anyhow!("Unknown tool in e2e test"));
     }
     Ok(CallToolResult {
-        content: vec![Content::Text(TextContent {
-            r#type: "text".to_string(),
+        content: vec![Content::Text {
             text: "e2e test successful".to_string(),
-        })],
+        }],
         is_error: false,
     })
 }
@@ -62,6 +62,36 @@ async fn mock_read_resource_handler(
             mime_type: Some("text/plain".to_string()),
             text: "Hello, Resource!".to_string(),
         })],
+    })
+}
+
+// NEW: Mock handlers for prompts
+async fn mock_list_prompts_handler(_handle: ConnectionHandle) -> Result<ListPromptsResult> {
+    Ok(ListPromptsResult {
+        prompts: vec![Prompt {
+            name: "e2e-prompt".to_string(),
+            description: Some("An end-to-end test prompt.".to_string()),
+            arguments: None,
+        }],
+    })
+}
+
+async fn mock_get_prompt_handler(
+    _handle: ConnectionHandle,
+    name: String,
+    _args: Option<Value>,
+) -> Result<GetPromptResult> {
+    if name != "e2e-prompt" {
+        return Err(anyhow::anyhow!("Unknown prompt in e2e test"));
+    }
+    Ok(GetPromptResult {
+        description: Some("A test prompt result.".to_string()),
+        messages: vec![PromptMessage {
+            role: "user".to_string(),
+            content: Content::Text {
+                text: "This is the prompt content.".to_string(),
+            },
+        }],
     })
 }
 
@@ -99,7 +129,6 @@ async fn setup_test_server(server: Server) -> (String, JoinHandle<()>) {
     // Give the server a moment to start its listener.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // CORRECTED: Return the original `server_addr`, not the one moved into the task.
     (server_addr, server_handle)
 }
 
@@ -140,6 +169,40 @@ async fn test_full_resource_interaction() {
             .await
             .unwrap();
         assert_eq!(resource_result.contents.len(), 1);
+    };
+
+    tokio::time::timeout(Duration::from_secs(6), test_body)
+        .await
+        .expect("Test timed out after 6 seconds");
+}
+
+#[tokio::test]
+async fn test_full_prompt_interaction() {
+    let test_body = async {
+        let server = Server::new("mcp-prompt-test")
+            .on_list_prompts(mock_list_prompts_handler)
+            .on_get_prompt(mock_get_prompt_handler);
+
+        let (server_addr, _server_handle) = setup_test_server(server).await;
+        let client = Client::connect(&server_addr).await.unwrap();
+
+        // List prompts
+        let list_result = client.list_prompts().await.unwrap();
+        assert_eq!(list_result.prompts.len(), 1);
+        assert_eq!(list_result.prompts[0].name, "e2e-prompt");
+
+        // Get a specific prompt
+        let get_result = client
+            .get_prompt("e2e-prompt".to_string(), None)
+            .await
+            .unwrap();
+        assert_eq!(get_result.messages.len(), 1);
+        match &get_result.messages[0].content {
+            Content::Text { text } => {
+                assert_eq!(text, "This is the prompt content.");
+            }
+            _ => panic!("Expected text content in prompt message"),
+        }
     };
 
     tokio::time::timeout(Duration::from_secs(6), test_body)

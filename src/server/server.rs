@@ -3,7 +3,9 @@
 use super::session::{ConnectionHandle, ServerSession};
 use crate::{
     protocol::ProtocolConnection,
-    types::{CallToolResult, ReadResourceResult, Resource, Tool},
+    types::{
+        CallToolResult, GetPromptResult, ListPromptsResult, ReadResourceResult, Resource, Tool,
+    },
     TcpAdapter,
 };
 use anyhow::Result;
@@ -12,7 +14,6 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::net::TcpListener;
 
 // --- Handler Type Definitions ---
-// These type aliases define the function signatures for the server's handlers.
 pub(crate) type ListToolsHandler = Arc<
     dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<Vec<Tool>>> + Send>>
         + Send
@@ -40,6 +41,21 @@ pub(crate) type ReadResourceHandler = Arc<
         + Send
         + Sync,
 >;
+// NEW: Add handlers for prompts
+pub(crate) type ListPromptsHandler = Arc<
+    dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<ListPromptsResult>> + Send>>
+        + Send
+        + Sync,
+>;
+pub(crate) type GetPromptHandler = Arc<
+    dyn Fn(
+            ConnectionHandle,
+            String,
+            Option<Value>,
+        ) -> Pin<Box<dyn Future<Output = Result<GetPromptResult>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A high-level server for handling MCP requests.
 #[derive(Default)]
@@ -49,6 +65,9 @@ pub struct Server {
     pub(crate) call_tool_handler: Option<CallToolHandler>,
     pub(crate) list_resources_handler: Option<ListResourcesHandler>,
     pub(crate) read_resource_handler: Option<ReadResourceHandler>,
+    // NEW: Add handler fields for prompts
+    pub(crate) list_prompts_handler: Option<ListPromptsHandler>,
+    pub(crate) get_prompt_handler: Option<GetPromptHandler>,
 }
 
 impl Server {
@@ -60,7 +79,8 @@ impl Server {
         }
     }
 
-    /// Registers the handler for `tools/list` requests.
+    // --- Builder Methods ---
+
     pub fn on_list_tools<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
@@ -70,7 +90,6 @@ impl Server {
         self
     }
 
-    /// Registers the handler for `tools/call` requests.
     pub fn on_call_tool<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle, String, Value) -> Fut + Send + Sync + 'static,
@@ -82,7 +101,6 @@ impl Server {
         self
     }
 
-    /// Registers the handler for `resources/list` requests.
     pub fn on_list_resources<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
@@ -92,7 +110,6 @@ impl Server {
         self
     }
 
-    /// Registers the handler for `resources/read` requests.
     pub fn on_read_resource<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle, String) -> Fut + Send + Sync + 'static,
@@ -100,6 +117,27 @@ impl Server {
     {
         self.read_resource_handler =
             Some(Arc::new(move |handle, uri| Box::pin(handler(handle, uri))));
+        self
+    }
+
+    // NEW: Add builder methods for prompts
+    pub fn on_list_prompts<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ListPromptsResult>> + Send + 'static,
+    {
+        self.list_prompts_handler = Some(Arc::new(move |handle| Box::pin(handler(handle))));
+        self
+    }
+
+    pub fn on_get_prompt<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(ConnectionHandle, String, Option<Value>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<GetPromptResult>> + Send + 'static,
+    {
+        self.get_prompt_handler = Some(Arc::new(move |handle, name, args| {
+            Box::pin(handler(handle, name, args))
+        }));
         self
     }
 
@@ -132,14 +170,16 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::CallToolResult;
+    use crate::types::{CallToolResult, ListPromptsResult};
 
     #[tokio::test]
     async fn test_handler_registration() {
         let server = Server::new("test")
             .on_list_tools(|_| async { Ok(vec![]) })
-            .on_call_tool(|_, _, _| async { Ok(CallToolResult::default()) });
+            .on_call_tool(|_, _, _| async { Ok(CallToolResult::default()) })
+            .on_list_prompts(|_| async { Ok(ListPromptsResult { prompts: vec![] }) });
         assert!(server.list_tools_handler.is_some());
         assert!(server.call_tool_handler.is_some());
+        assert!(server.list_prompts_handler.is_some());
     }
 }

@@ -4,9 +4,10 @@ use super::server::Server;
 use crate::adapter::NetworkAdapter;
 use crate::protocol::ProtocolConnection;
 use crate::types::{
-    CallToolParams, ErrorData, ErrorResponse, Implementation, InitializeRequestParams,
-    InitializeResult, ListResourcesParams, ListToolsParams, Notification, ReadResourceParams,
-    Request, RequestId, Response, LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
+    CallToolParams, ErrorData, ErrorResponse, GetPromptParams, Implementation,
+    InitializeRequestParams, InitializeResult, ListPromptsParams, ListResourcesParams,
+    ListToolsParams, Notification, ReadResourceParams, Request, RequestId, Response,
+    LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
 };
 use anyhow::{anyhow, Result};
 use serde::Serialize;
@@ -106,6 +107,19 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                 let handler = self.server.read_resource_handler.clone();
                 self.dispatch(req, &handler, |h, p: ReadResourceParams| {
                     h(handle.clone(), p.uri)
+                })
+                .await
+            }
+            // NEW: Add dispatch logic for prompts
+            "prompts/list" => {
+                let handler = self.server.list_prompts_handler.clone();
+                self.dispatch(req, &handler, |h, _: ListPromptsParams| h(handle.clone()))
+                    .await
+            }
+            "prompts/get" => {
+                let handler = self.server.get_prompt_handler.clone();
+                self.dispatch(req, &handler, |h, p: GetPromptParams| {
+                    h(handle.clone(), p.name, p.arguments)
                 })
                 .await
             }

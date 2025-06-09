@@ -11,6 +11,7 @@ license = "MIT"
 members = [
   ".",
   "examples/notification_client",
+  "examples/prompt_client",
   "examples/simple_client",
   "examples/simple_server",
 ]

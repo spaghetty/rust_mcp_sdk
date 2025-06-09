@@ -2,14 +2,14 @@
 
 use super::session::{ClientSession, NotificationHandler, NotificationHandlerMap, ResponseResult};
 use crate::{
+    adapter::TcpAdapter,
     protocol::ProtocolConnection,
     types::{
-        CallToolParams, CallToolResult, ClientCapabilities, Implementation,
-        InitializeRequestParams, InitializeResult, ListResourcesParams, ListToolsParams,
-        ReadResourceParams, ReadResourceResult, Request, RequestId, Resource, Tool,
-        LATEST_PROTOCOL_VERSION,
+        CallToolParams, CallToolResult, ClientCapabilities, GetPromptParams, GetPromptResult,
+        Implementation, InitializeRequestParams, InitializeResult, ListPromptsParams,
+        ListPromptsResult, ListResourcesParams, ListToolsParams, ReadResourceParams,
+        ReadResourceResult, Request, RequestId, Resource, Tool, LATEST_PROTOCOL_VERSION,
     },
-    TcpAdapter,
 };
 use anyhow::Result;
 use dashmap::DashMap;
@@ -157,6 +157,21 @@ impl Client {
 
     pub async fn read_resource(&self, uri: String) -> Result<ReadResourceResult> {
         self.send_request("resources/read", ReadResourceParams { uri })
+            .await
+    }
+
+    // NEW: Add methods for prompts
+    pub async fn list_prompts(&self) -> Result<ListPromptsResult> {
+        self.send_request("prompts/list", ListPromptsParams {})
+            .await
+    }
+
+    pub async fn get_prompt(
+        &self,
+        name: String,
+        arguments: Option<Value>,
+    ) -> Result<GetPromptResult> {
+        self.send_request("prompts/get", GetPromptParams { name, arguments })
             .await
     }
 }

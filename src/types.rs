@@ -24,7 +24,6 @@ pub struct Tool {
     pub annotations: Option<ToolAnnotations>,
 }
 
-// CORRECTED: Manually implement Default because `Value` does not have a default.
 impl Default for Tool {
     fn default() -> Self {
         Self {
@@ -48,6 +47,37 @@ pub struct Resource {
     pub mime_type: Option<String>,
 }
 
+// --- NEW: Prompt-related types ---
+
+/// A prompt or prompt template that the server offers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Prompt {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<PromptArgument>>,
+}
+
+/// An argument for a prompt template.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptArgument {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+}
+
+/// Describes a message returned as part of a prompt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptMessage {
+    pub role: String, // "user" or "assistant"
+    pub content: Content,
+}
+
+// --- Result Types ---
+
 /// The server's response to a `tools/call` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -64,34 +94,39 @@ pub struct ReadResourceResult {
     pub contents: Vec<ResourceContents>,
 }
 
+/// The server's response to a `prompts/list` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListPromptsResult {
+    pub prompts: Vec<Prompt>,
+}
+
+/// The server's response to a `prompts/get` request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetPromptResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub messages: Vec<PromptMessage>,
+}
+
 // --- Content and Resource Types ---
 
+// CORRECTED: This enum now uses `serde(tag = "type")` for robust, idiomatic
+// serialization and deserialization, removing the need for separate structs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
 pub enum Content {
-    Text(TextContent),
-    Image(ImageContent),
-    EmbeddedResource(EmbeddedResource),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TextContent {
-    pub r#type: String, // "text"
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageContent {
-    pub r#type: String, // "image"
-    pub data: String,
-    pub mime_type: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EmbeddedResource {
-    pub r#type: String, // "resource"
-    pub resource: ResourceContents,
+    Text {
+        text: String,
+    },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    Resource {
+        resource: ResourceContents,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +168,7 @@ pub struct ToolAnnotations {
 }
 
 // --- Foundational JSON-RPC Types ---
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request<T> {
     pub jsonrpc: String,
@@ -155,13 +191,18 @@ pub enum RequestId {
     Str(String),
 }
 
-// --- Notification Types ---
-/// A notification from the server to the client. It has no `id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification<T> {
     pub jsonrpc: String,
     pub method: String,
     pub params: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JSONRPCResponse<T> {
+    Success(Response<T>),
+    Error(ErrorResponse),
 }
 
 // --- JSON-RPC Error Types ---
@@ -180,14 +221,8 @@ pub struct ErrorData {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum JSONRPCResponse<T> {
-    Success(Response<T>),
-    Error(ErrorResponse),
-}
-
 // --- Initialization Handshake Types ---
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeRequestParams {
@@ -255,6 +290,18 @@ pub struct ReadResourceParams {
     pub uri: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPromptsParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPromptParams {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Value>,
+}
+
 /// Parameters for the `tools/listChanged` notification. Currently empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,6 +330,54 @@ mod tests {
         let json_string = serde_json::to_string(&tool).unwrap();
         let deserialized: Tool = serde_json::from_str(&json_string).unwrap();
         assert_eq!(tool, deserialized);
+    }
+
+    #[test]
+    fn test_prompt_roundtrip() {
+        let prompt = Prompt {
+            name: "test-prompt".to_string(),
+            description: Some("A test prompt".to_string()),
+            arguments: Some(vec![PromptArgument {
+                name: "arg1".to_string(),
+                description: Some("An argument".to_string()),
+                required: Some(true),
+            }]),
+        };
+        let json_string = serde_json::to_string(&prompt).unwrap();
+        let deserialized: Prompt = serde_json::from_str(&json_string).unwrap();
+        assert_eq!(prompt, deserialized);
+    }
+
+    #[test]
+    fn test_get_prompt_result_roundtrip() {
+        let result = GetPromptResult {
+            description: Some("A test prompt".to_string()),
+            messages: vec![
+                PromptMessage {
+                    role: "user".to_string(),
+                    content: Content::Text {
+                        text: "Hello".to_string(),
+                    },
+                },
+                PromptMessage {
+                    role: "assistant".to_string(),
+                    content: Content::Image {
+                        data: "base64data".to_string(),
+                        mime_type: "image/png".to_string(),
+                    },
+                },
+            ],
+        };
+
+        let json_string = serde_json::to_string(&result).unwrap();
+        let deserialized: GetPromptResult = serde_json::from_str(&json_string).unwrap();
+        assert_eq!(result, deserialized);
+
+        // Also check the raw JSON
+        let value: Value = serde_json::from_str(&json_string).unwrap();
+        assert_eq!(value["messages"][0]["content"]["type"], "text");
+        assert_eq!(value["messages"][1]["content"]["type"], "image");
+        assert_eq!(value["messages"][1]["content"]["mimeType"], "image/png");
     }
 
     #[test]
@@ -324,12 +419,12 @@ mod tests {
         let notif_json = r#"
         {
             "jsonrpc": "2.0",
-            "method": "tools/listChanged",
+            "method": "notifications/tools/list_changed",
             "params": {}
         }
         "#;
         let notif: Notification<ListToolsChangedParams> = serde_json::from_str(notif_json).unwrap();
-        assert_eq!(notif.method, "tools/listChanged");
+        assert_eq!(notif.method, "notifications/tools/list_changed");
     }
 
     #[test]

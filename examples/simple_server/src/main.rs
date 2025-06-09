@@ -1,16 +1,16 @@
-//! An example MCP server that provides multiple tools and resource handling.
+//! An example MCP server that provides tools, resources, and prompts.
 
 use anyhow::Result;
 use mcp_sdk::{
-    CallToolResult, ConnectionHandle, Content, ListToolsChangedParams, Notification,
-    ReadResourceResult, Resource, ResourceContents, Server, TextContent, TextResourceContents,
-    Tool,
+    CallToolResult, ConnectionHandle, Content, GetPromptResult, ListPromptsResult,
+    ListToolsChangedParams, Notification, Prompt, ReadResourceResult, Resource, ResourceContents,
+    Server, TextResourceContents, Tool,
 };
 use serde_json::Value;
 
 // --- Tool Handler Implementations ---
 
-// UPDATED: This handler now lists all available tools.
+// UPDATED: Added `_handle` argument.
 async fn list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
     println!("[Server] Handler invoked: list_tools_handler");
     Ok(vec![
@@ -35,7 +35,7 @@ async fn list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
     ])
 }
 
-// UPDATED: This single handler now dispatches based on the tool name.
+// UPDATED: Added `handle` argument.
 async fn call_tool_handler(
     handle: ConnectionHandle,
     name: String,
@@ -51,10 +51,9 @@ async fn call_tool_handler(
             let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
             println!("[Server] Simulating fetch for URL: {}", url);
             Ok(CallToolResult {
-                content: vec![Content::Text(TextContent {
-                    r#type: "text".to_string(),
+                content: vec![Content::Text {
                     text: format!("Mock content of {}", url),
-                })],
+                }],
                 is_error: false,
             })
         }
@@ -68,10 +67,9 @@ async fn call_tool_handler(
                 })
                 .await?;
             Ok(CallToolResult {
-                content: vec![Content::Text(TextContent {
-                    r#type: "text".to_string(),
+                content: vec![Content::Text {
                     text: "Notification sent!".to_string(),
-                })],
+                }],
                 is_error: false,
             })
         }
@@ -79,8 +77,9 @@ async fn call_tool_handler(
     }
 }
 
-// --- Resource Handler Implementations (Unchanged) ---
+// --- Resource Handler Implementations ---
 
+// UPDATED: Added `_handle` argument.
 async fn list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resource>> {
     Ok(vec![Resource {
         uri: "mcp://example/hello.txt".to_string(),
@@ -90,6 +89,7 @@ async fn list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resourc
     }])
 }
 
+// UPDATED: Added `_handle` argument.
 async fn read_resource_handler(
     _handle: ConnectionHandle,
     uri: String,
@@ -106,18 +106,50 @@ async fn read_resource_handler(
     })
 }
 
+// --- NEW: Prompt Handler Implementations ---
+
+// UPDATED: Added `_handle` argument.
+async fn list_prompts_handler(_handle: ConnectionHandle) -> Result<ListPromptsResult> {
+    println!("[Server] Handler invoked: list_prompts_handler");
+    Ok(ListPromptsResult {
+        prompts: vec![Prompt {
+            name: "example-prompt".to_string(),
+            description: Some("An example prompt.".to_string()),
+            arguments: None,
+        }],
+    })
+}
+
+// UPDATED: Added `_handle` argument.
+async fn get_prompt_handler(
+    _handle: ConnectionHandle,
+    name: String,
+    _args: Option<Value>,
+) -> Result<GetPromptResult> {
+    println!(
+        "[Server] Handler invoked: get_prompt_handler with name='{}'",
+        name
+    );
+    Ok(GetPromptResult {
+        description: Some("This is the example prompt.".to_string()),
+        messages: vec![],
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
 
-    // UPDATED: Register the new combined handlers.
-    let server = Server::new("mcp-multi-tool-server")
+    // UPDATED: Register all handlers, including the new prompt handlers.
+    let server = Server::new("mcp-example-server")
         .on_list_tools(list_tools_handler)
         .on_call_tool(call_tool_handler)
         .on_list_resources(list_resources_handler)
-        .on_read_resource(read_resource_handler);
+        .on_read_resource(read_resource_handler)
+        .on_list_prompts(list_prompts_handler)
+        .on_get_prompt(get_prompt_handler);
 
-    println!("[Server] All handlers (tools and resources) are enabled.");
+    println!("[Server] All handlers (tools, resources, and prompts) are enabled.");
     println!("[Server] Starting on {}...", addr);
 
     server.listen(addr).await?;
