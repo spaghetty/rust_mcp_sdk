@@ -49,7 +49,6 @@ pub struct Resource {
 }
 
 /// The server's response to a `tools/call` request.
-// CORRECTED: Added Default derive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
@@ -134,7 +133,6 @@ pub struct ToolAnnotations {
 }
 
 // --- Foundational JSON-RPC Types ---
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request<T> {
     pub jsonrpc: String,
@@ -158,7 +156,6 @@ pub enum RequestId {
 }
 
 // --- Notification Types ---
-
 /// A notification from the server to the client. It has no `id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification<T> {
@@ -191,7 +188,6 @@ pub enum JSONRPCResponse<T> {
 }
 
 // --- Initialization Handshake Types ---
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeRequestParams {

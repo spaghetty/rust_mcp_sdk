@@ -16,18 +16,17 @@
 //! * `client`: Provides the high-level API for creating MCP clients.
 //! * `server`: Provides the high-level API for creating MCP servers.
 
-// Declare the modules that make up our library.
-// `pub(crate)` makes them visible within our crate, but not to external users.
-// The public API is then explicitly defined by the `pub use` statements below.
+// --- Module Declarations ---
+
 pub(crate) mod adapter;
-pub(crate) mod client;
 pub(crate) mod protocol;
-pub(crate) mod server;
 pub(crate) mod types;
 
+// UPDATED: Declare the new client module structure.
+pub mod client;
+pub mod server;
+
 // --- Public API Re-exports ---
-// This is a common pattern in Rust libraries to create a clean, flat public API.
-// This section now defines the *entire* public surface of our library.
 pub use adapter::{NetworkAdapter, TcpAdapter};
 pub use client::Client;
 pub use protocol::ProtocolConnection;
@@ -40,7 +39,7 @@ pub use types::{
     Content,
     EmbeddedResource,
     ImageContent,
-    ListToolsChangedParams, // UPDATED: Added this type to the public API
+    ListToolsChangedParams,
     // General RPC Types
     Notification,
 
