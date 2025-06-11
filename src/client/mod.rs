@@ -2,5 +2,7 @@
 
 mod client;
 mod session;
+mod session_group;
 
 pub use client::Client;
+pub use session_group::ClientSessionGroup;

@@ -6,7 +6,7 @@
 // 1. Declare the child modules. The code for these lives in
 //    `server/server.rs` and `server/session.rs`.
 mod server;
-mod session;
+pub(crate) mod session;
 
 // 2. Publicly re-export the types that consumers of our library will use.
 pub use server::Server;

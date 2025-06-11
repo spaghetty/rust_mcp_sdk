@@ -1,158 +1,95 @@
-//! An example MCP server that provides tools, resources, and prompts.
+//! An example MCP server that can be configured with command-line flags.
+//! This allows running multiple distinct instances for testing the ClientSessionGroup.
+//!
+//! Run instances like:
+//! `cargo run -p simple-server-example -- --port 8081 --suffix _1`
+//! `cargo run -p simple-server-example -- --port 8082 --suffix _2`
 
 use anyhow::Result;
+use clap::Parser;
 use mcp_sdk::{
-    CallToolResult, ConnectionHandle, Content, GetPromptResult, ListPromptsResult,
-    ListToolsChangedParams, Notification, Prompt, ReadResourceResult, Resource, ResourceContents,
-    Server, TextResourceContents, Tool,
+    CallToolResult, ConnectionHandle, Content, ListToolsChangedParams, Notification, Server, Tool,
 };
 use serde_json::Value;
+use std::sync::Arc;
 
-// --- Tool Handler Implementations ---
+// --- Command-Line Argument Parsing ---
+#[derive(Parser, Debug, Clone)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// The port number to listen on.
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
 
-// UPDATED: Added `_handle` argument.
-async fn list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
-    println!("[Server] Handler invoked: list_tools_handler");
-    Ok(vec![
-        Tool {
-            name: "fetch".to_string(),
-            description: Some("Fetches a website and returns its content".to_string()),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["url"],
-                "properties": { "url": { "type": "string", "description": "URL to fetch" } },
-            }),
-            annotations: None,
-        },
-        Tool {
-            name: "trigger_notification".to_string(),
-            description: Some(
-                "Asks the server to send a 'tools/listChanged' notification.".to_string(),
-            ),
-            input_schema: serde_json::json!({ "type": "object" }),
-            annotations: None,
-        },
-    ])
+    /// A suffix to append to resource names to make them unique.
+    #[arg(long, default_value = "")]
+    suffix: String,
 }
 
-// UPDATED: Added `handle` argument.
-async fn call_tool_handler(
-    handle: ConnectionHandle,
-    name: String,
-    args: Value,
-) -> Result<CallToolResult> {
-    println!(
-        "[Server] Handler invoked: call_tool_handler with name='{}'",
-        name
-    );
+// --- Handler Implementations ---
 
-    match name.as_str() {
-        "fetch" => {
-            let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
-            println!("[Server] Simulating fetch for URL: {}", url);
-            Ok(CallToolResult {
-                content: vec![Content::Text {
-                    text: format!("Mock content of {}", url),
-                }],
-                is_error: false,
-            })
-        }
-        "trigger_notification" => {
-            println!("[Server] Sending 'tools/listChanged' notification...");
-            handle
-                .send_notification(Notification {
-                    jsonrpc: "2.0".to_string(),
-                    method: "notifications/tools/list_changed".to_string(),
-                    params: ListToolsChangedParams {},
-                })
-                .await?;
-            Ok(CallToolResult {
-                content: vec![Content::Text {
-                    text: "Notification sent!".to_string(),
-                }],
-                is_error: false,
-            })
-        }
-        _ => Err(anyhow::anyhow!("Unknown tool called: {}", name)),
-    }
-}
-
-// --- Resource Handler Implementations ---
-
-// UPDATED: Added `_handle` argument.
-async fn list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resource>> {
-    Ok(vec![Resource {
-        uri: "mcp://example/hello.txt".to_string(),
-        name: "hello.txt".to_string(),
-        description: Some("An example resource file.".to_string()),
-        mime_type: Some("text/plain".to_string()),
+async fn list_tools_handler(suffix: String, _handle: ConnectionHandle) -> Result<Vec<Tool>> {
+    let tool_name = format!("fetch{}", suffix);
+    println!("[Server{}] Handler invoked: list_tools_handler", suffix);
+    Ok(vec![Tool {
+        name: tool_name,
+        description: Some("Fetches a website and returns its content".to_string()),
+        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        annotations: None,
     }])
 }
 
-// UPDATED: Added `_handle` argument.
-async fn read_resource_handler(
-    _handle: ConnectionHandle,
-    uri: String,
-) -> Result<ReadResourceResult> {
-    if uri != "mcp://example/hello.txt" {
-        return Err(anyhow::anyhow!("Unknown resource URI: {}", uri));
-    }
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::Text(TextResourceContents {
-            uri,
-            mime_type: Some("text/plain".to_string()),
-            text: "Hello from a resource!".to_string(),
-        })],
-    })
-}
-
-// --- NEW: Prompt Handler Implementations ---
-
-// UPDATED: Added `_handle` argument.
-async fn list_prompts_handler(_handle: ConnectionHandle) -> Result<ListPromptsResult> {
-    println!("[Server] Handler invoked: list_prompts_handler");
-    Ok(ListPromptsResult {
-        prompts: vec![Prompt {
-            name: "example-prompt".to_string(),
-            description: Some("An example prompt.".to_string()),
-            arguments: None,
-        }],
-    })
-}
-
-// UPDATED: Added `_handle` argument.
-async fn get_prompt_handler(
-    _handle: ConnectionHandle,
+async fn call_tool_handler(
+    suffix: String,
+    handle: ConnectionHandle,
     name: String,
-    _args: Option<Value>,
-) -> Result<GetPromptResult> {
+    _args: Value,
+) -> Result<CallToolResult> {
+    let expected_tool_name = format!("fetch{}", suffix);
+    if name != expected_tool_name {
+        return Err(anyhow::anyhow!("Unknown tool called: {}", name));
+    }
+
     println!(
-        "[Server] Handler invoked: get_prompt_handler with name='{}'",
-        name
+        "[Server{}] Handler invoked: call_tool with name='{}'",
+        suffix, name
     );
-    Ok(GetPromptResult {
-        description: Some("This is the example prompt.".to_string()),
-        messages: vec![],
+
+    // Send a notification to demonstrate that the handle works.
+    handle
+        .send_notification(Notification {
+            jsonrpc: "2.0".to_string(),
+            method: "notifications/tools/list_changed".to_string(),
+            params: ListToolsChangedParams {},
+        })
+        .await?;
+
+    Ok(CallToolResult {
+        content: vec![Content::Text {
+            text: format!("Response from fetch{}", suffix),
+        }],
+        is_error: false,
     })
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let addr = "127.0.0.1:8080";
+    let args = Arc::new(Args::parse());
+    let addr = format!("127.0.0.1:{}", args.port);
 
-    // UPDATED: Register all handlers, including the new prompt handlers.
-    let server = Server::new("mcp-example-server")
-        .on_list_tools(list_tools_handler)
-        .on_call_tool(call_tool_handler)
-        .on_list_resources(list_resources_handler)
-        .on_read_resource(read_resource_handler)
-        .on_list_prompts(list_prompts_handler)
-        .on_get_prompt(get_prompt_handler);
+    let server = Server::new("mcp-configurable-server")
+        .on_list_tools({
+            let args = Arc::clone(&args);
+            move |handle| list_tools_handler(args.suffix.clone(), handle)
+        })
+        .on_call_tool({
+            let args = Arc::clone(&args);
+            move |handle, name, value| call_tool_handler(args.suffix.clone(), handle, name, value)
+        });
 
-    println!("[Server] All handlers (tools, resources, and prompts) are enabled.");
-    println!("[Server] Starting on {}...", addr);
+    println!("[Server{}] Starting on {}...", args.suffix, addr);
 
-    server.listen(addr).await?;
+    server.listen(&addr).await?;
 
     Ok(())
 }
