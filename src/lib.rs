@@ -20,6 +20,7 @@
 
 pub(crate) mod adapter;
 pub mod client;
+pub mod error;
 pub(crate) mod protocol;
 pub mod server;
 pub mod types;
@@ -27,6 +28,7 @@ pub mod types;
 // --- Public API Re-exports ---
 pub use adapter::{NetworkAdapter, TcpAdapter};
 pub use client::Client;
+pub use error::{Error, Result};
 pub use protocol::ProtocolConnection;
 pub use server::{ConnectionHandle, Server};
 pub use types::{

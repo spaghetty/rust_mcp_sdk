@@ -1,8 +1,7 @@
 //! An example MCP client that demonstrates receiving a notification from the server.
 
-use anyhow::Result;
 // CORRECTED: Import ListToolsChangedParams directly from the crate root.
-use mcp_sdk::{Client, ListToolsChangedParams};
+use mcp_sdk::{Client, ListToolsChangedParams, Result};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

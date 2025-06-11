@@ -1,8 +1,8 @@
 //! Defines the `ClientSessionGroup` for managing multiple client connections.
 
 use crate::client::Client;
+use crate::error::Result;
 use crate::types::Tool;
-use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 ///
 /// ```no_run
 /// use mcp_sdk::client::ClientSessionGroup;
-/// use anyhow::Result;
+/// use mcp_sdk::Result;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
@@ -100,7 +100,7 @@ impl ClientSessionGroup {
 
         // Wait for all the concurrent `list_tools` calls to complete.
         for handle in join_handles {
-            match handle.await? {
+            match handle.await.unwrap() {
                 Ok(tools) => {
                     all_tools.extend(tools);
                 }

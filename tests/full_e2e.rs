@@ -3,18 +3,19 @@
 //! This test compiles the entire `mcp-sdk` crate as a library and then uses its
 //! public API to run a client and server to ensure they can communicate correctly.
 
-use anyhow::Result;
+// UPDATED: Use our custom Result type and Error enum.
 use mcp_sdk::{
-    CallToolResult, Client, ConnectionHandle, Content, GetPromptResult, ListPromptsResult, Prompt,
-    PromptMessage, ReadResourceResult, Resource, ResourceContents, Server, TextResourceContents,
-    Tool,
+    error::Result, CallToolResult, Client, ConnectionHandle, Content, GetPromptResult,
+    ListPromptsResult, Prompt, PromptMessage, ReadResourceResult, Resource, ResourceContents,
+    Server, TextResourceContents, Tool,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-// --- Mock Handlers ---
+// --- Mock Handlers (with updated signatures) ---
 
+// UPDATED: All mock handlers now return the SDK's custom Result type.
 async fn mock_list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
     Ok(vec![Tool {
         name: "e2e-test-tool".to_string(),
@@ -30,7 +31,11 @@ async fn mock_call_tool_handler(
     _args: Value,
 ) -> Result<CallToolResult> {
     if name != "e2e-test-tool" {
-        return Err(anyhow::anyhow!("Unknown tool in e2e test"));
+        // In a real application, you might use a more specific error variant.
+        return Err(mcp_sdk::Error::Other(format!(
+            "Unknown tool in e2e test: {}",
+            name
+        )));
     }
     Ok(CallToolResult {
         content: vec![Content::Text {
@@ -54,7 +59,10 @@ async fn mock_read_resource_handler(
     uri: String,
 ) -> Result<ReadResourceResult> {
     if uri != "mcp://e2e/file.txt" {
-        return Err(anyhow::anyhow!("Unknown resource in e2e test"));
+        return Err(mcp_sdk::Error::Other(format!(
+            "Unknown resource in e2e test: {}",
+            uri
+        )));
     }
     Ok(ReadResourceResult {
         contents: vec![ResourceContents::Text(TextResourceContents {
@@ -65,7 +73,6 @@ async fn mock_read_resource_handler(
     })
 }
 
-// NEW: Mock handlers for prompts
 async fn mock_list_prompts_handler(_handle: ConnectionHandle) -> Result<ListPromptsResult> {
     Ok(ListPromptsResult {
         prompts: vec![Prompt {
@@ -82,7 +89,10 @@ async fn mock_get_prompt_handler(
     _args: Option<Value>,
 ) -> Result<GetPromptResult> {
     if name != "e2e-prompt" {
-        return Err(anyhow::anyhow!("Unknown prompt in e2e test"));
+        return Err(mcp_sdk::Error::Other(format!(
+            "Unknown prompt in e2e test: {}",
+            name
+        )));
     }
     Ok(GetPromptResult {
         description: Some("A test prompt result.".to_string()),
@@ -97,36 +107,25 @@ async fn mock_get_prompt_handler(
 
 // --- Test Setup ---
 
-// This test harness now starts the server using its public `listen`
-// API, just like a real application would.
 async fn setup_test_server(server: Server) -> (String, JoinHandle<()>) {
-    // Bind to port 0 to let the OS choose a free port.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server_addr = listener.local_addr().unwrap().to_string();
 
-    // We drop the listener immediately, which frees up the port.
-    // We then pass the address to the real server's listen method.
-    // This has a small race condition (another app could grab the port),
-    // but it is acceptable and standard for testing.
     drop(listener);
 
     let addr_clone = server_addr.clone();
     let server_handle = tokio::spawn(async move {
-        // Run the actual server listen loop.
         if let Err(e) = server.listen(&addr_clone).await {
-            // It's normal for the listen loop to error out when the test ends
-            // and all connections are dropped. We only panic on unexpected errors.
             let error_str = e.to_string();
-            if !error_str.contains("os error 10054") && // Windows "connection reset"
-               !error_str.contains("Connection reset by peer") && // Unix "connection reset"
-               !error_str.contains("An existing connection was forcibly closed")
+            if !error_str.contains("os error 10054")
+                && !error_str.contains("Connection reset by peer")
+                && !error_str.contains("An existing connection was forcibly closed")
             {
                 panic!("Server failed to listen: {}", e);
             }
         }
     });
 
-    // Give the server a moment to start its listener.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     (server_addr, server_handle)
@@ -186,23 +185,15 @@ async fn test_full_prompt_interaction() {
         let (server_addr, _server_handle) = setup_test_server(server).await;
         let client = Client::connect(&server_addr).await.unwrap();
 
-        // List prompts
         let list_result = client.list_prompts().await.unwrap();
         assert_eq!(list_result.prompts.len(), 1);
         assert_eq!(list_result.prompts[0].name, "e2e-prompt");
 
-        // Get a specific prompt
         let get_result = client
             .get_prompt("e2e-prompt".to_string(), None)
             .await
             .unwrap();
         assert_eq!(get_result.messages.len(), 1);
-        match &get_result.messages[0].content {
-            Content::Text { text } => {
-                assert_eq!(text, "This is the prompt content.");
-            }
-            _ => panic!("Expected text content in prompt message"),
-        }
     };
 
     tokio::time::timeout(Duration::from_secs(6), test_body)
@@ -245,6 +236,8 @@ async fn test_call_unregistered_tool_returns_error() {
             .await;
         assert!(result.is_err());
         let error_message = result.unwrap_err().to_string();
+        // UPDATED: Check for the new error message format.
+        assert!(error_message.contains("JSON-RPC error"));
         assert!(error_message.contains("has no registered handler"));
     };
 

@@ -1,8 +1,7 @@
 //! An example MCP client that interacts with the fetch tool server and optional resources.
 
-use anyhow::Result;
 use clap::Parser;
-use mcp_sdk::{Client, ResourceContents};
+use mcp_sdk::{Client, ResourceContents, Result};
 use serde_json::json;
 
 // --- Command-Line Argument Parsing ---
@@ -55,10 +54,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            Err(e) => eprintln!(
-                "\n❌ Error listing resources: {}. Is the server running with --with-resources?",
-                e
-            ),
+            Err(e) => eprintln!("\n❌ Error listing resources: {}.", e),
         }
     } else {
         println!("\n--- Phase 2: Skipped ---");

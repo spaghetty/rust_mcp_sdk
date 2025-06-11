@@ -3,6 +3,7 @@
 use super::session::{ClientSession, NotificationHandler, NotificationHandlerMap, ResponseResult};
 use crate::{
     adapter::TcpAdapter,
+    error::Result,
     protocol::ProtocolConnection,
     types::{
         CallToolParams, CallToolResult, ClientCapabilities, GetPromptParams, GetPromptResult,
@@ -11,7 +12,6 @@ use crate::{
         ReadResourceResult, Request, RequestId, Resource, Tool, LATEST_PROTOCOL_VERSION,
     },
 };
-use anyhow::Result;
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -37,7 +37,7 @@ use tokio::task::JoinHandle;
 /// ```no_run
 /// use mcp_sdk::client::Client;
 /// use mcp_sdk::types::ListToolsChangedParams;
-/// use anyhow::Result;
+/// use mcp_sdk::Result;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {

@@ -110,7 +110,6 @@ pub struct GetPromptResult {
 
 // --- Content and Resource Types ---
 
-// CORRECTED: This enum now uses `serde(tag = "type")` for robust, idiomatic
 // serialization and deserialization, removing the need for separate structs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -207,6 +206,8 @@ pub enum JSONRPCResponse<T> {
 
 // --- JSON-RPC Error Types ---
 pub const METHOD_NOT_FOUND: i32 = -32601;
+pub const INVALID_PARAMS: i32 = -32602;
+pub const INTERNAL_ERROR: i32 = -32603;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorResponse {

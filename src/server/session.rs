@@ -2,6 +2,7 @@
 
 use super::server::Server;
 use crate::adapter::NetworkAdapter;
+use crate::error::{Error, Result};
 use crate::protocol::ProtocolConnection;
 use crate::types::{
     CallToolParams, ErrorData, ErrorResponse, GetPromptParams, Implementation,
@@ -9,7 +10,6 @@ use crate::types::{
     ListToolsParams, Notification, ReadResourceParams, Request, RequestId, Response,
     LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
 };
-use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::Value;
 use std::future::Future;
@@ -110,7 +110,6 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                 })
                 .await
             }
-            // NEW: Add dispatch logic for prompts
             "prompts/list" => {
                 let handler = self.server.list_prompts_handler.clone();
                 self.dispatch(req, &handler, |h, _: ListPromptsParams| h(handle.clone()))
@@ -123,7 +122,9 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                 })
                 .await
             }
-            "initialize" => Err(anyhow!("Client sent 'initialize' request twice.")),
+            "initialize" => Err(Error::Other(
+                "Client sent 'initialize' request twice.".into(),
+            )),
             unhandled_method => {
                 self.send_error(
                     req.id,
@@ -154,8 +155,8 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
             self.is_initialized = true;
             Ok(())
         } else {
-            Err(anyhow!(
-                "First message from client was not an 'initialize' request."
+            Err(Error::Other(
+                "First message from client was not an 'initialize' request.".into(),
             ))
         }
     }
@@ -174,14 +175,31 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
         Fut: Future<Output = Result<R>>,
     {
         if let Some(handler) = handler_opt.clone() {
-            let params: P = serde_json::from_value(req.params)?;
-            let result = f(handler, params).await?;
-            let response = Response {
-                id: req.id,
-                jsonrpc: "2.0".to_string(),
-                result,
-            };
-            self.connection.send_serializable(response).await
+            match serde_json::from_value(req.params) {
+                Ok(params) => {
+                    match f(handler, params).await {
+                        Ok(result) => {
+                            // On success, send the result back.
+                            let response = Response {
+                                id: req.id,
+                                jsonrpc: "2.0".to_string(),
+                                result,
+                            };
+                            self.connection.send_serializable(response).await
+                        }
+                        Err(err) => {
+                            // If the handler returns an error, send a JSON-RPC error response.
+                            self.send_error(req.id, crate::types::INTERNAL_ERROR, &err.to_string())
+                                .await
+                        }
+                    }
+                }
+                Err(e) => {
+                    // If params are invalid, send an `Invalid Params` error.
+                    self.send_error(req.id, crate::types::INVALID_PARAMS, &e.to_string())
+                        .await
+                }
+            }
         } else {
             self.send_error(
                 req.id,
@@ -314,9 +332,46 @@ mod tests {
         let outgoing = run_session_with_requests(server, vec![make_init_request(), call_req]).await;
 
         let responses = outgoing.lock().unwrap();
-        // CORRECTED: The server sends a response to init, a response to the call, AND a notification.
+        // The server sends a response to init, a response to the call, AND a notification.
         assert_eq!(responses.len(), 3);
         let notif_found = responses.iter().any(|s| s.contains("test/notification"));
         assert!(notif_found, "The test notification was not found");
+    }
+    #[tokio::test]
+    async fn test_handler_error_sends_jsonrpc_error() {
+        // 1. Create a handler that is guaranteed to fail.
+        let server = Arc::new(Server::new("test").on_list_tools(|_handle| async {
+            // This handler returns our custom SDK Error.
+            Err(Error::Other("This handler failed on purpose".into()))
+        }));
+
+        // 2. Send a request to the failing handler.
+        let list_req = serde_json::to_string(
+            &json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": {} }),
+        )
+        .unwrap();
+        let outgoing = run_session_with_requests(server, vec![make_init_request(), list_req]).await;
+
+        // 3. Check the server's response.
+        let responses = outgoing.lock().unwrap();
+        assert_eq!(responses.len(), 2); // Should get init response and an error response.
+
+        // Find the error response by its request ID.
+        let error_response_str = responses
+            .iter()
+            .find(|s| s.contains("\"id\":99"))
+            .expect("Could not find response for request id 99");
+
+        // 4. Assert that the response is a well-formed JSON-RPC error.
+        let error_response: JSONRPCResponse<Value> =
+            serde_json::from_str(error_response_str).unwrap();
+
+        match error_response {
+            JSONRPCResponse::Success(_) => panic!("Expected an error response, but got success"),
+            JSONRPCResponse::Error(err) => {
+                assert_eq!(err.error.code, crate::types::INTERNAL_ERROR);
+                assert!(err.error.message.contains("This handler failed on purpose"));
+            }
+        }
     }
 }

@@ -2,17 +2,17 @@
 
 use crate::{
     adapter::NetworkAdapter,
+    error::{Error, Result},
     protocol::ProtocolConnection,
     types::{JSONRPCResponse, Request, RequestId},
 };
-use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 // --- Type Aliases ---
-pub(crate) type ResponseResult = Result<Value, anyhow::Error>;
+pub(crate) type ResponseResult = Result<Value>;
 pub(crate) type ResponseSender = oneshot::Sender<ResponseResult>;
 pub(crate) type PendingRequestMap = Arc<Mutex<HashMap<RequestId, ResponseSender>>>;
 pub(crate) type NotificationHandler = Arc<dyn Fn(Value) + Send + Sync>;
@@ -78,21 +78,17 @@ impl<A: NetworkAdapter + Send + 'static> ClientSession<A> {
     async fn handle_response(raw_message: Value, pending_requests: &PendingRequestMap) {
         if let Ok(id) = serde_json::from_value::<RequestId>(raw_message["id"].clone()) {
             if let Some(sender) = pending_requests.lock().await.remove(&id) {
-                let response: Result<JSONRPCResponse<Value>, _> =
+                let response: core::result::Result<JSONRPCResponse<Value>, _> =
                     serde_json::from_value(raw_message);
                 match response {
                     Ok(JSONRPCResponse::Success(success)) => {
                         let _ = sender.send(Ok(success.result));
                     }
                     Ok(JSONRPCResponse::Error(err)) => {
-                        let _ = sender.send(Err(anyhow!(
-                            "Server returned an error: code={}, message='{}'",
-                            err.error.code,
-                            err.error.message
-                        )));
+                        let _ = sender.send(Err(Error::JsonRpc(err.error)));
                     }
                     Err(e) => {
-                        let _ = sender.send(Err(anyhow!("Failed to deserialize response: {}", e)));
+                        let _ = sender.send(Err(Error::Serialization(e)));
                     }
                 }
             }

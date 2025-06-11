@@ -5,7 +5,7 @@
 //! higher-level client and server logic can operate without needing to know how
 //! messages are actually sent over the wire.
 
-use anyhow::Result;
+use crate::error::Result;
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};

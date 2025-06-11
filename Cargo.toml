@@ -18,7 +18,6 @@ members = [
 ]
 
 [dependencies]
-anyhow = "1.0"
 async-trait = "0.1"
 # Add dashmap for concurrent request tracking
 dashmap = "5.5.3"

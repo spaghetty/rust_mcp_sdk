@@ -5,10 +5,12 @@
 //! `cargo run -p simple-server-example -- --port 8081 --suffix _1`
 //! `cargo run -p simple-server-example -- --port 8082 --suffix _2`
 
-use anyhow::Result;
 use clap::Parser;
 use mcp_sdk::{
-    CallToolResult, ConnectionHandle, Content, ListToolsChangedParams, Notification, Server, Tool,
+    error::{Error, Result},
+    CallToolResult, ConnectionHandle, Content, GetPromptResult, ListPromptsResult,
+    ListToolsChangedParams, Notification, Prompt, ReadResourceResult, Resource, ResourceContents,
+    Server, TextResourceContents, Tool,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -31,44 +33,131 @@ struct Args {
 async fn list_tools_handler(suffix: String, _handle: ConnectionHandle) -> Result<Vec<Tool>> {
     let tool_name = format!("fetch{}", suffix);
     println!("[Server{}] Handler invoked: list_tools_handler", suffix);
-    Ok(vec![Tool {
-        name: tool_name,
-        description: Some("Fetches a website and returns its content".to_string()),
-        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-        annotations: None,
-    }])
+    Ok(vec![
+        Tool {
+            name: tool_name,
+            description: Some("Fetches a website and returns its content".to_string()),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            annotations: None,
+        },
+        Tool {
+            name: "trigger_notification".to_string(),
+            description: Some(
+                "Asks the server to send a 'tools/listChanged' notification.".to_string(),
+            ),
+            input_schema: serde_json::json!({ "type": "object" }),
+            annotations: None,
+        },
+    ])
 }
 
 async fn call_tool_handler(
     suffix: String,
     handle: ConnectionHandle,
     name: String,
-    _args: Value,
+    args: Value,
 ) -> Result<CallToolResult> {
-    let expected_tool_name = format!("fetch{}", suffix);
-    if name != expected_tool_name {
-        return Err(anyhow::anyhow!("Unknown tool called: {}", name));
-    }
-
     println!(
         "[Server{}] Handler invoked: call_tool with name='{}'",
         suffix, name
     );
 
-    // Send a notification to demonstrate that the handle works.
-    handle
-        .send_notification(Notification {
-            jsonrpc: "2.0".to_string(),
-            method: "notifications/tools/list_changed".to_string(),
-            params: ListToolsChangedParams {},
-        })
-        .await?;
+    match name.as_str() {
+        "trigger_notification" => {
+            println!(
+                "[Server{}] Sending 'tools/listChanged' notification...",
+                suffix
+            );
+            handle
+                .send_notification(Notification {
+                    jsonrpc: "2.0".to_string(),
+                    method: "notifications/tools/list_changed".to_string(),
+                    params: ListToolsChangedParams {},
+                })
+                .await?;
+            Ok(CallToolResult {
+                content: vec![Content::Text {
+                    text: "Notification sent!".to_string(),
+                }],
+                is_error: false,
+            })
+        }
+        // Handle the dynamically named fetch tool
+        tool_name if tool_name == format!("fetch{}", suffix) => {
+            let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
+            println!("[Server{}] Simulating fetch for URL: {}", suffix, url);
+            Ok(CallToolResult {
+                content: vec![Content::Text {
+                    text: format!("Mock content of {}", url),
+                }],
+                is_error: false,
+            })
+        }
+        _ => Err(Error::Other(format!("Unknown tool called: {}", name))),
+    }
+}
+async fn list_resources_handler(
+    suffix: String,
+    _handle: ConnectionHandle,
+) -> Result<Vec<Resource>> {
+    println!("[Server{}] Handler invoked: list_resources_handler", suffix);
+    Ok(vec![Resource {
+        uri: format!("mcp://example/hello{}.txt", suffix),
+        name: format!("hello{}.txt", suffix),
+        description: Some("An example resource file.".to_string()),
+        mime_type: Some("text/plain".to_string()),
+    }])
+}
 
-    Ok(CallToolResult {
-        content: vec![Content::Text {
-            text: format!("Response from fetch{}", suffix),
+async fn read_resource_handler(
+    suffix: String,
+    _handle: ConnectionHandle,
+    uri: String,
+) -> Result<ReadResourceResult> {
+    println!(
+        "[Server{}] Handler invoked: read_resource_handler for uri: '{}'",
+        suffix, uri
+    );
+    let expected_uri = format!("mcp://example/hello{}.txt", suffix);
+    if uri != expected_uri {
+        return Err(Error::Other(format!("Unknown resource URI: {}", uri)));
+    }
+    Ok(ReadResourceResult {
+        contents: vec![ResourceContents::Text(TextResourceContents {
+            uri,
+            mime_type: Some("text/plain".to_string()),
+            text: format!("Hello from resource {}!", suffix),
+        })],
+    })
+}
+
+async fn list_prompts_handler(
+    suffix: String,
+    _handle: ConnectionHandle,
+) -> Result<ListPromptsResult> {
+    println!("[Server{}] Handler invoked: list_prompts_handler", suffix);
+    Ok(ListPromptsResult {
+        prompts: vec![Prompt {
+            name: format!("example-prompt{}", suffix),
+            description: Some("An example prompt.".to_string()),
+            arguments: None,
         }],
-        is_error: false,
+    })
+}
+
+async fn get_prompt_handler(
+    suffix: String,
+    _handle: ConnectionHandle,
+    name: String,
+    _args: Option<Value>,
+) -> Result<GetPromptResult> {
+    println!(
+        "[Server{}] Handler invoked: get_prompt_handler with name='{}'",
+        suffix, name
+    );
+    Ok(GetPromptResult {
+        description: Some(format!("This is the example prompt{}.", suffix)).into(),
+        messages: vec![],
     })
 }
 
@@ -85,6 +174,24 @@ async fn main() -> Result<()> {
         .on_call_tool({
             let args = Arc::clone(&args);
             move |handle, name, value| call_tool_handler(args.suffix.clone(), handle, name, value)
+        })
+        .on_list_resources({
+            let args = Arc::clone(&args);
+            move |handle| list_resources_handler(args.suffix.clone(), handle)
+        })
+        .on_read_resource({
+            let args = Arc::clone(&args);
+            move |handle, uri| read_resource_handler(args.suffix.clone(), handle, uri)
+        })
+        .on_list_prompts({
+            let args = Arc::clone(&args);
+            move |handle| list_prompts_handler(args.suffix.clone(), handle)
+        })
+        .on_get_prompt({
+            let args = Arc::clone(&args);
+            move |handle, name, args_val| {
+                get_prompt_handler(args.suffix.clone(), handle, name, args_val)
+            }
         });
 
     println!("[Server{}] Starting on {}...", args.suffix, addr);

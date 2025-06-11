@@ -1,7 +1,6 @@
 //! An example MCP client that demonstrates prompt handling.
 
-use anyhow::Result;
-use mcp_sdk::{Client, Content};
+use mcp_sdk::{Client, Content, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
