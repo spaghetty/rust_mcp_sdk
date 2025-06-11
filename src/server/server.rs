@@ -14,6 +14,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::net::TcpListener;
 
 // --- Handler Type Definitions ---
+// These type aliases define the function signatures for the server's handlers.
 pub(crate) type ListToolsHandler = Arc<
     dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<Vec<Tool>>> + Send>>
         + Send
@@ -41,7 +42,7 @@ pub(crate) type ReadResourceHandler = Arc<
         + Send
         + Sync,
 >;
-// NEW: Add handlers for prompts
+
 pub(crate) type ListPromptsHandler = Arc<
     dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<ListPromptsResult>> + Send>>
         + Send
@@ -57,7 +58,45 @@ pub(crate) type GetPromptHandler = Arc<
         + Sync,
 >;
 
-/// A high-level server for handling MCP requests.
+/// A high-level, asynchronous server for handling MCP requests.
+///
+/// This struct uses a builder pattern to register handlers for different MCP methods.
+/// Once all handlers are registered, the `listen` method is called to start the server
+/// and begin accepting client connections.
+///
+/// # Example
+///
+/// ```no_run
+/// use mcp_sdk::server::{ConnectionHandle, Server};
+/// use mcp_sdk::types::{Tool, CallToolResult};
+/// use anyhow::Result;
+/// use serde_json::Value;
+///
+/// async fn list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
+///     // ... logic to return a list of tools
+///     Ok(vec![])
+/// }
+///
+/// async fn call_tool_handler(
+///     _handle: ConnectionHandle,
+///     name: String,
+///     args: Value
+/// ) -> Result<CallToolResult> {
+///     // ... logic to execute a tool
+///     Ok(CallToolResult::default())
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let server = Server::new("my-mcp-server")
+///         .on_list_tools(list_tools_handler)
+///         .on_call_tool(call_tool_handler);
+///
+///     server.listen("127.0.0.1:8080").await?;
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Default)]
 pub struct Server {
     pub(crate) name: String,
@@ -71,7 +110,11 @@ pub struct Server {
 }
 
 impl Server {
-    /// Creates a new `Server`.
+    /// Creates a new `Server` builder.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - A name for the server implementation, e.g., "my-tool-server".
     pub fn new(name: &str) -> Self {
         Server {
             name: name.to_string(),
@@ -80,7 +123,9 @@ impl Server {
     }
 
     // --- Builder Methods ---
-
+    /// Registers a handler for the `tools/list` request.
+    ///
+    /// The provided closure will be executed whenever a client sends a `tools/list` request.
     pub fn on_list_tools<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
@@ -90,6 +135,9 @@ impl Server {
         self
     }
 
+    /// Registers a handler for the `tools/call` request.
+    ///
+    /// The provided closure will be executed whenever a client sends a `tools/call` request.
     pub fn on_call_tool<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle, String, Value) -> Fut + Send + Sync + 'static,
@@ -101,6 +149,9 @@ impl Server {
         self
     }
 
+    /// Registers a handler for the `resources/list` request.
+    ///
+    /// The provided closure will be executed whenever a client sends a `resources/list` request.
     pub fn on_list_resources<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
@@ -110,6 +161,9 @@ impl Server {
         self
     }
 
+    /// Registers a handler for the `resources/read` request.
+    ///
+    /// The provided closure will be executed whenever a client sends a `resources/read` request.
     pub fn on_read_resource<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle, String) -> Fut + Send + Sync + 'static,
@@ -120,7 +174,9 @@ impl Server {
         self
     }
 
-    // NEW: Add builder methods for prompts
+    /// Registers a handler for the `prompts/list` request.
+    ///
+    /// The provided closure will be executed whenever a client sends a `prompts/list` request.
     pub fn on_list_prompts<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
@@ -130,6 +186,9 @@ impl Server {
         self
     }
 
+    /// Registers a handler for the `prompts/get` request.
+    ///
+    /// The provided closure will be executed whenever a client sends a `prompts/get` request.
     pub fn on_get_prompt<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ConnectionHandle, String, Option<Value>) -> Fut + Send + Sync + 'static,
@@ -141,7 +200,24 @@ impl Server {
         self
     }
 
-    /// Starts the server and listens for incoming TCP connections.
+    /// Starts the TCP listener and enters the main server loop.
+    ///
+    /// This method binds a TCP listener to the given address. For each incoming
+    /// client connection, it spawns a new asynchronous task to handle that
+    //  connection's entire lifecycle, allowing the server to handle multiple
+    //  clients concurrently.
+    ///
+    /// This method runs indefinitely until the process is terminated.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The network address to listen on (e.g., "127.0.0.1:8080").
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the server fails to bind the TCP
+    /// listener to the specified address, which can happen if the port is already
+    /// in use or if the application lacks the necessary permissions.
     pub async fn listen(self, addr: &str) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         println!("[Server] Listening on {}", addr);
