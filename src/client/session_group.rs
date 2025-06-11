@@ -8,6 +8,34 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Manages connections to multiple MCP servers simultaneously.
+///
+/// This struct is designed for client applications that need to connect to more
+/// than one MCP server at a time. It provides a convenient way to add, remove,
+/// and interact with a collection of `Client` sessions, and to aggregate
+/// data (like tools or prompts) from all of them concurrently.
+///
+/// # Example
+///
+/// ```no_run
+/// use mcp_sdk::client::ClientSessionGroup;
+/// use anyhow::Result;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let group = ClientSessionGroup::new();
+///
+///     // Connect to two different servers
+///     group.add_client("127.0.0.1:8081").await?;
+///     group.add_client("127.0.0.1:8082").await?;
+///
+///     // Aggregate all tools from all connected servers
+///     let all_tools = group.list_tools_all().await?;
+///     println!("All available tools: {:?}", all_tools);
+///
+///     // The group will automatically clean up connections when it is dropped.
+///     Ok(())
+/// }
+/// ```
 #[derive(Default)]
 pub struct ClientSessionGroup {
     sessions: Arc<RwLock<HashMap<String, Arc<Client>>>>,
@@ -20,11 +48,18 @@ impl ClientSessionGroup {
     }
 
     /// Adds a new client to the group by connecting to the given server address.
-    /// The server address is used as the key for this session.
+    ///
+    /// This method will establish a new connection and perform the MCP handshake.
+    /// If the connection is successful, the new `Client` session is added to the group,
+    /// keyed by its server address.
     ///
     /// # Arguments
     ///
     /// * `addr` - The network address of the MCP server (e.g., "127.0.0.1:8080").
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the connection or handshake fails.
     pub async fn add_client(&self, addr: &str) -> Result<()> {
         let client = Client::connect(addr).await?;
         let mut sessions = self.sessions.write().await;
@@ -33,6 +68,9 @@ impl ClientSessionGroup {
     }
 
     /// Removes a client from the group by its server address.
+    ///
+    /// When the client is removed, its connection will be gracefully terminated
+    /// by the `Drop` implementation on the `Client` struct.
     ///
     /// # Arguments
     ///
@@ -47,7 +85,7 @@ impl ClientSessionGroup {
     /// Fetches a list of all tools from all connected servers and aggregates them.
     ///
     /// This method demonstrates how to dispatch a request to multiple clients
-    /// concurrently and combine their results.
+    /// concurrently and combine their results into a single list.
     pub async fn list_tools_all(&self) -> Result<Vec<Tool>> {
         let mut all_tools = Vec::new();
         let mut join_handles = Vec::new();
