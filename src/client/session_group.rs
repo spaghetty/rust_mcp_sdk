@@ -6,6 +6,7 @@ use crate::types::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::error;
 
 /// Manages connections to multiple MCP servers simultaneously.
 ///
@@ -118,7 +119,7 @@ impl ClientSessionGroup {
                 Err(e) => {
                     // In a real application, you might want more sophisticated error handling,
                     // like collecting errors or logging them without failing the whole operation.
-                    eprintln!("Failed to fetch tools from a server: {}", e);
+                    error!("Failed to fetch tools from a server: {}", e);
                 }
             }
         }

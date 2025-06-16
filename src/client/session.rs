@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tracing::{error, info};
 
 // --- Type Aliases ---
 pub(crate) type ResponseResult = Result<Value>;
@@ -48,7 +49,7 @@ impl<A: NetworkAdapter + Send + 'static> ClientSession<A> {
                 Some((request, responder)) = self.request_receiver.recv() => {
                     self.pending_requests.lock().await.insert(request.id.clone(), responder);
                     if let Err(e) = self.connection.send_serializable(request).await {
-                        eprintln!("[Client] Error writing message to server: {}", e);
+                        error!("[Client] Error writing message to server: {}", e);
                         break;
                     }
                 },
@@ -62,11 +63,11 @@ impl<A: NetworkAdapter + Send + 'static> ClientSession<A> {
                             }
                         },
                         Ok(None) => {
-                             println!("[Client] Connection closed by server.");
+                             info!("[Client] Connection closed by server.");
                              break;
                         }
                         Err(e) => {
-                            eprintln!("[Client] Error reading message from server: {}", e);
+                            error!("[Client] Error reading message from server: {}", e);
                             break;
                         }
                     }
@@ -105,7 +106,7 @@ impl<A: NetworkAdapter + Send + 'static> ClientSession<A> {
                     (handler)(params);
                 });
             } else {
-                println!("[Client] Received unhandled notification: {}", method);
+                info!("[Client] Received unhandled notification: {}", method);
             }
         }
     }

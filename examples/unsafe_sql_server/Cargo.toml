@@ -15,3 +15,6 @@ rusqlite = { version = "0.31.0", features = ["bundled"] }
 serde_json = "1.0"
 # The async runtime
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1.41"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -22,6 +22,7 @@ use std::sync::{
 };
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
+use tracing::{error, info};
 
 /// A high-level, asynchronous client for interacting with an MCP server.
 ///
@@ -121,7 +122,7 @@ impl Client {
             .send_request_with_id(RequestId::Num(0), "initialize", init_params)
             .await?;
 
-        println!(
+        info!(
             "[Client] Handshake successful. Server: {:?}",
             init_response.server_info
         );
@@ -147,7 +148,7 @@ impl Client {
             Arc::new(
                 move |params: Value| match serde_json::from_value::<P>(params) {
                     Ok(typed_params) => (handler)(typed_params),
-                    Err(e) => eprintln!(
+                    Err(e) => error!(
                         "[Client] Failed to deserialize params for 'tools/listChanged': {}",
                         e
                     ),

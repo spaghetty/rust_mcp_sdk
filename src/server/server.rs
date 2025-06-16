@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tracing::{error, info};
 
 // --- Handler Type Definitions ---
 pub(crate) type ListToolsHandler = Arc<
@@ -230,18 +231,18 @@ impl Server {
         A: NetworkAdapter + From<TcpStream> + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
-        println!("[Server] Listening on {}", addr);
+        info!("[Server] Listening on {}", addr);
         let server = Arc::new(self);
 
         loop {
             let (stream, client_addr) = listener.accept().await?;
-            println!("[Server] Accepted connection from: {}", client_addr);
+            info!("[Server] Accepted connection from: {}", client_addr);
             let server_clone = Arc::clone(&server);
 
             tokio::spawn(async move {
                 let adapter = A::from(stream);
                 if let Err(e) = server_clone.handle_connection(adapter).await {
-                    eprintln!("[Server] Session failed for {}: {}", client_addr, e);
+                    error!("[Server] Session failed for {}: {}", client_addr, e);
                 }
             });
         }

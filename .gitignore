@@ -2,6 +2,7 @@
 **/target/
 **/*.rs.bk
 **/*.swp
+logs/
 
 # IDEs/editors
 .idea/

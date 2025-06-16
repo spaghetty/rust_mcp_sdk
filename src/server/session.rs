@@ -15,6 +15,7 @@ use serde_json::Value;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::{error, info};
 
 /// A handle given to user-code to allow sending notifications back to the client.
 #[derive(Clone)]
@@ -51,7 +52,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
     }
 
     pub(crate) async fn run(mut self) -> Result<()> {
-        eprintln!("[Session] New session task started. Waiting for messages.");
+        info!("[Session] New session task started. Waiting for messages.");
         let (notification_tx, mut notification_rx) = mpsc::channel::<String>(32);
 
         loop {
@@ -69,7 +70,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                     };
                     let handle = ConnectionHandle { notification_sender: notification_tx.clone() };
                     if let Err(e) = self.dispatch_request(raw_req, handle).await {
-                         eprintln!("[Server] Error dispatching request: {}", e);
+                         error!("[Server] Error dispatching request: {}", e);
                     }
                 },
                 Some(notif_json) = notification_rx.recv() => {
@@ -138,7 +139,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
     }
 
     async fn handle_initialize(&mut self, raw_req: Value) -> Result<()> {
-        eprintln!("[Session] Initialize handshake started. Session is now in pending.");
+        info!("[Session] Initialize handshake started. Session is now in pending.");
         if let Some("initialize") = raw_req.get("method").and_then(Value::as_str) {
             let init_req: Request<InitializeRequestParams> = serde_json::from_value(raw_req)?;
             let init_response = Response {
@@ -155,7 +156,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
             };
             self.connection.send_serializable(init_response).await?;
             self.is_initialized = true;
-            eprintln!("[Session] Initialize handshake successful. Session is now initialized.");
+            info!("[Session] Initialize handshake successful. Session is now initialized.");
             Ok(())
         } else {
             Err(Error::Other(

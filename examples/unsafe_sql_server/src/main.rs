@@ -8,6 +8,8 @@ use mcp_sdk::{
 use rusqlite::{Connection, ToSql};
 use serde_json::Value;
 use std::sync::Arc;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -126,12 +128,34 @@ async fn call_tool_dispatcher(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // --- Setup is unchanged ---
     let args = Args::parse();
-    eprintln!("[Server] Initializing database at '{}'...", args.db_file);
+
+    // 1. Create an appender that writes to a daily rotating log file.
+    //    Log files will be created in a `logs` directory in your project root.
+    let file_appender = tracing_appender::rolling::daily("logs", "server.log");
+
+    // 2. Create a non-blocking writer. This is a performance optimization.
+    //    The `_guard` must be kept in scope for the logs to be flushed.
+    let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // 3. Build the subscriber.
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(
+            // To see logs in both the console and the file, we can combine writers.
+            non_blocking_writer,
+        )
+        // Use the RUST_LOG environment variable for filtering, same as before.
+        .with_env_filter(EnvFilter::from_default_env())
+        .finish();
+
+    // 4. Set the subscriber as the global default.
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Unable to set global tracing subscriber");
+
+    info!("[Server] Initializing database at '{}'...", args.db_file);
     let conn = Connection::open(&args.db_file).map_err(to_sdk_error)?;
     conn.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending')", []).map_err(to_sdk_error)?;
-    eprintln!("[Server] Database initialized successfully.");
+    info!("[Server] Database initialized successfully.");
     let shared_state = Arc::new(ServerState {
         db_path: args.db_file,
     });
@@ -145,9 +169,9 @@ async fn main() -> Result<()> {
     let adapter = StdioAdapter::new();
 
     // ...and tells the server to handle the single stdio connection.
-    eprintln!("[Server] Starting session on stdio.");
+    info!("[Server] Starting session on stdio.");
     server.handle_connection(adapter).await?;
-    eprintln!("[Server] Stdio session ended.");
+    info!("[Server] Stdio session ended.");
 
     Ok(())
 }
