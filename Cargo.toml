@@ -15,6 +15,7 @@ members = [
   "examples/prompt_client",
   "examples/simple_client",
   "examples/simple_server",
+  "examples/unsafe_sql_server",
 ]
 
 [dependencies]
