@@ -6,8 +6,8 @@
 // UPDATED: Use our custom Result type and Error enum.
 use mcp_sdk::{
     error::Result, CallToolResult, Client, ConnectionHandle, Content, GetPromptResult,
-    ListPromptsResult, Prompt, PromptMessage, ReadResourceResult, Resource, ResourceContents,
-    Server, TextResourceContents, Tool,
+    ListPromptsResult, NdjsonAdapter, Prompt, PromptMessage, ReadResourceResult, Resource,
+    ResourceContents, Server, TextResourceContents, Tool,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -115,7 +115,7 @@ async fn setup_test_server(server: Server) -> (String, JoinHandle<()>) {
 
     let addr_clone = server_addr.clone();
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.listen(&addr_clone).await {
+        if let Err(e) = server.tcp_listen::<NdjsonAdapter>(&addr_clone).await {
             let error_str = e.to_string();
             if !error_str.contains("os error 10054")
                 && !error_str.contains("Connection reset by peer")
@@ -141,7 +141,8 @@ async fn test_full_client_server_interaction() {
             .on_call_tool(mock_call_tool_handler);
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
-        let client = Client::connect(&server_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
+        let client = Client::new(adapter1).await.unwrap();
         let tools = client.list_tools().await.unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "e2e-test-tool");
@@ -160,7 +161,8 @@ async fn test_full_resource_interaction() {
             .on_read_resource(mock_read_resource_handler);
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
-        let client = Client::connect(&server_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
+        let client = Client::new(adapter1).await.unwrap();
         let resources = client.list_resources().await.unwrap();
         assert_eq!(resources.len(), 1);
         let resource_result = client
@@ -183,7 +185,8 @@ async fn test_full_prompt_interaction() {
             .on_get_prompt(mock_get_prompt_handler);
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
-        let client = Client::connect(&server_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
+        let client = Client::new(adapter1).await.unwrap();
 
         let list_result = client.list_prompts().await.unwrap();
         assert_eq!(list_result.prompts.len(), 1);
@@ -209,7 +212,8 @@ async fn test_multiple_interactions_on_one_connection() {
             .on_call_tool(mock_call_tool_handler);
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
-        let client = Client::connect(&server_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
+        let client = Client::new(adapter1).await.unwrap();
         let tools = client.list_tools().await.unwrap();
         assert_eq!(tools[0].name, "e2e-test-tool");
         let result = client
@@ -230,7 +234,8 @@ async fn test_call_unregistered_tool_returns_error() {
         let server = Server::new("mcp-error-test").on_list_tools(mock_list_tools_handler);
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
-        let client = Client::connect(&server_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
+        let client = Client::new(adapter1).await.unwrap();
         let result = client
             .call_tool("this-tool-does-not-exist".to_string(), json!({}))
             .await;

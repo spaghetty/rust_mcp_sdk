@@ -1,13 +1,14 @@
 //! An example MCP client that demonstrates prompt handling.
 
-use mcp_sdk::{Client, Content, Result};
+use mcp_sdk::{Client, Content, NdjsonAdapter, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
 
     println!("[Client] Connecting to server at {}...", addr);
-    let client = Client::connect(addr).await?;
+    let adapter = NdjsonAdapter::connect(addr).await.unwrap();
+    let client = Client::new(adapter).await?;
     println!("[Client] Successfully connected.");
 
     // 1. List the prompts available on the server.

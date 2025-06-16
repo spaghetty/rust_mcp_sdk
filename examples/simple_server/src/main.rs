@@ -8,6 +8,7 @@
 use clap::Parser;
 use mcp_sdk::{
     error::{Error, Result},
+    network_adapter::NdjsonAdapter,
     CallToolResult, ConnectionHandle, Content, GetPromptResult, ListPromptsResult,
     ListToolsChangedParams, Notification, Prompt, ReadResourceResult, Resource, ResourceContents,
     Server, TextResourceContents, Tool,
@@ -196,7 +197,7 @@ async fn main() -> Result<()> {
 
     println!("[Server{}] Starting on {}...", args.suffix, addr);
 
-    server.listen(&addr).await?;
+    server.tcp_listen::<NdjsonAdapter>(&addr).await?;
 
     Ok(())
 }

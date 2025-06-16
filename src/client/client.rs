@@ -2,8 +2,8 @@
 
 use super::session::{ClientSession, NotificationHandler, NotificationHandlerMap, ResponseResult};
 use crate::{
-    adapter::TcpAdapter,
     error::Result,
+    network_adapter::NetworkAdapter,
     protocol::ProtocolConnection,
     types::{
         CallToolParams, CallToolResult, ClientCapabilities, GetPromptParams, GetPromptResult,
@@ -38,10 +38,12 @@ use tokio::task::JoinHandle;
 /// use mcp_sdk::client::Client;
 /// use mcp_sdk::types::ListToolsChangedParams;
 /// use mcp_sdk::Result;
+/// use mcp_sdk::network_adapter::NdjsonAdapter;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
-///     let client = Client::connect("127.0.0.1:8080").await?;
+///     let adapter1 = NdjsonAdapter::connect("127.0.0.1:8080").await.unwrap();
+///     let client = Client::new(adapter1).await.unwrap();
 ///
 ///     client.on_tools_list_changed(|params: ListToolsChangedParams| {
 ///         println!("The list of tools on the server has changed!");
@@ -72,8 +74,11 @@ impl Client {
     /// # Arguments
     ///
     /// * `addr` - The network address of the MCP server (e.g., "127.0.0.1:8080").
-    pub async fn connect(addr: &str) -> Result<Self> {
-        let adapter = TcpAdapter::connect(addr).await?;
+    pub async fn new<A>(adapter: A) -> Result<Self>
+    where
+        // The adapter must be able to connect and be used in an async task.
+        A: NetworkAdapter + 'static,
+    {
         let connection = ProtocolConnection::new(adapter);
 
         let pending_requests = Arc::new(Mutex::new(HashMap::new()));

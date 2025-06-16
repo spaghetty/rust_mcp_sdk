@@ -18,15 +18,27 @@ use tokio::sync::RwLock;
 ///
 /// ```no_run
 /// use mcp_sdk::client::ClientSessionGroup;
+/// use mcp_sdk::network_adapter::NdjsonAdapter;
+/// use mcp_sdk::Client;
 /// use mcp_sdk::Result;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let group = ClientSessionGroup::new();
-///
 ///     // Connect to two different servers
-///     group.add_client("127.0.0.1:8081").await?;
-///     group.add_client("127.0.0.1:8082").await?;
+///     let adapter1 = NdjsonAdapter::connect("127.0.0.1:8081").await.unwrap();
+///     let client1 = Client::new(adapter1).await.unwrap();
+///     group
+///       .add_client("127.0.0.1:8081".to_string(), client1)
+///       .await
+///       .unwrap();
+///
+///     let adapter2 = NdjsonAdapter::connect("127.0.0.1:8082").await.unwrap();
+///     let client2 = Client::new(adapter2).await.unwrap();
+///     group
+///       .add_client("127.0.0.1:8082".to_string(), client2)
+///       .await
+///       .unwrap();
 ///
 ///     // Aggregate all tools from all connected servers
 ///     let all_tools = group.list_tools_all().await?;
@@ -60,10 +72,9 @@ impl ClientSessionGroup {
     /// # Errors
     ///
     /// This function will return an error if the connection or handshake fails.
-    pub async fn add_client(&self, addr: &str) -> Result<()> {
-        let client = Client::connect(addr).await?;
+    pub async fn add_client(&self, id: String, client: Client) -> Result<()> {
         let mut sessions = self.sessions.write().await;
-        sessions.insert(addr.to_string(), Arc::new(client));
+        sessions.insert(id, Arc::new(client));
         Ok(())
     }
 
@@ -120,10 +131,10 @@ impl ClientSessionGroup {
 mod tests {
     use super::*;
     use crate::{
+        network_adapter::NdjsonAdapter,
         protocol::ProtocolConnection,
         server::{session::ServerSession, ConnectionHandle, Server},
         types::Tool,
-        TcpAdapter,
     };
     use serde_json::json;
     use std::time::Duration;
@@ -157,7 +168,7 @@ mod tests {
                             let server_clone = Arc::clone(&server);
                             tokio::spawn(async move {
                                 let session = ServerSession::new(
-                                    ProtocolConnection::new(TcpAdapter::new(stream)),
+                                    ProtocolConnection::new(NdjsonAdapter::from(stream)),
                                     server_clone,
                                 );
                                 if let Err(e) = session.run().await {
@@ -184,8 +195,12 @@ mod tests {
         let (server2_addr, _server2_handle) = setup_mock_server("tool-from-server-2").await;
 
         let group = ClientSessionGroup::new();
-        group.add_client(&server1_addr).await.unwrap();
-        group.add_client(&server2_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server1_addr).await.unwrap();
+        let client1 = Client::new(adapter1).await.unwrap();
+        group.add_client(server1_addr, client1).await.unwrap();
+        let adapter2 = NdjsonAdapter::connect(&server2_addr).await.unwrap();
+        let client2 = Client::new(adapter2).await.unwrap();
+        group.add_client(server2_addr, client2).await.unwrap();
 
         assert_eq!(group.sessions.read().await.len(), 2);
 
@@ -201,8 +216,15 @@ mod tests {
         let (server2_addr, _server2_handle) = setup_mock_server("tool-2").await;
 
         let group = ClientSessionGroup::new();
-        group.add_client(&server1_addr).await.unwrap();
-        group.add_client(&server2_addr).await.unwrap();
+        let adapter1 = NdjsonAdapter::connect(&server1_addr).await.unwrap();
+        let client1 = Client::new(adapter1).await.unwrap();
+        group
+            .add_client(server1_addr.clone(), client1)
+            .await
+            .unwrap();
+        let adapter2 = NdjsonAdapter::connect(&server2_addr).await.unwrap();
+        let client2 = Client::new(adapter2).await.unwrap();
+        group.add_client(server2_addr, client2).await.unwrap();
 
         group.remove_client(&server1_addr).await;
         assert_eq!(group.sessions.read().await.len(), 1);

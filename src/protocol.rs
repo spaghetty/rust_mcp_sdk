@@ -4,8 +4,8 @@
 //! for sending and receiving MCP messages. It is responsible for all `serde_json`
 //! operations, keeping the client/server logic clean and focused on application tasks.
 
-use crate::adapter::NetworkAdapter;
 use crate::error::Result;
+use crate::network_adapter::NetworkAdapter;
 use serde::{de::DeserializeOwned, Serialize};
 
 /// A connection that handles MCP protocol logic over a generic `NetworkAdapter`.

@@ -1,7 +1,7 @@
 //! An example MCP client that demonstrates receiving a notification from the server.
 
 // CORRECTED: Import ListToolsChangedParams directly from the crate root.
-use mcp_sdk::{Client, ListToolsChangedParams, Result};
+use mcp_sdk::{Client, ListToolsChangedParams, NdjsonAdapter, Result};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -13,7 +13,8 @@ async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
 
     println!("[Client] Connecting to server at {}...", addr);
-    let client = Client::connect(addr).await?;
+    let adapter = NdjsonAdapter::connect(addr).await.unwrap();
+    let client = Client::new(adapter).await?;
     println!("[Client] Successfully connected.");
 
     // 1. Set up a flag and register a handler for the 'tools/listChanged' notification.

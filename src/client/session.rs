@@ -1,8 +1,8 @@
 //! Defines the internal `ClientSession` that manages the connection's background task.
 
 use crate::{
-    adapter::NetworkAdapter,
     error::{Error, Result},
+    network_adapter::NetworkAdapter,
     protocol::ProtocolConnection,
     types::{JSONRPCResponse, Request, RequestId},
 };
@@ -115,7 +115,8 @@ impl<A: NetworkAdapter + Send + 'static> ClientSession<A> {
 mod tests {
     use super::*;
     use crate::{
-        adapter::NetworkAdapter, protocol::ProtocolConnection, types::ListToolsChangedParams,
+        network_adapter::NetworkAdapter, protocol::ProtocolConnection,
+        types::ListToolsChangedParams,
     };
     use async_trait::async_trait;
     use serde_json::json;

@@ -3,15 +3,16 @@
 use super::session::{ConnectionHandle, ServerSession};
 use crate::{
     error::Result,
+    network_adapter::NetworkAdapter,
     protocol::ProtocolConnection,
     types::{
         CallToolResult, GetPromptResult, ListPromptsResult, ReadResourceResult, Resource, Tool,
     },
-    TcpAdapter,
 };
 use serde_json::Value;
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 // --- Handler Type Definitions ---
 pub(crate) type ListToolsHandler = Arc<
@@ -68,6 +69,7 @@ pub(crate) type GetPromptHandler = Arc<
 /// ```no_run
 /// use mcp_sdk::server::{ConnectionHandle, Server};
 /// use mcp_sdk::types::{Tool, CallToolResult};
+/// use mcp_sdk::network_adapter::NdjsonAdapter;
 /// use mcp_sdk::Result;
 /// use serde_json::Value;
 ///
@@ -92,12 +94,12 @@ pub(crate) type GetPromptHandler = Arc<
 ///         .on_call_tool(call_tool_handler);
 ///
 ///     // This runs forever, handling connections until the process is stopped.
-///     server.listen("127.0.0.1:8080").await?;
+///     server.tcp_listen::<NdjsonAdapter>("127.0.0.1:8080").await?;
 ///
 ///     Ok(())
 /// }
 /// ```
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Server {
     pub(crate) name: String,
     pub(crate) list_tools_handler: Option<ListToolsHandler>,
@@ -193,6 +195,16 @@ impl Server {
         }));
         self
     }
+    /// Takes a single, pre-existing network adapter and runs a session for it.
+    /// This is the core logic block used by both `serve` and `tcp_listen`.
+    pub async fn handle_connection<A>(&self, adapter: A) -> Result<()>
+    where
+        A: NetworkAdapter + 'static,
+    {
+        let conn = ProtocolConnection::new(adapter);
+        let session = ServerSession::new(conn, Arc::new(self.clone()));
+        session.run().await
+    }
 
     /// Starts the TCP listener and enters the main server loop.
     ///
@@ -213,7 +225,10 @@ impl Server {
     /// This function will return an error if the server fails to bind the TCP
     /// listener to the specified address. This can happen if the port is already
     /// in use or if the application lacks the necessary permissions to bind to
-    pub async fn listen(self, addr: &str) -> Result<()> {
+    pub async fn tcp_listen<A>(self, addr: &str) -> Result<()>
+    where
+        A: NetworkAdapter + From<TcpStream> + 'static,
+    {
         let listener = TcpListener::bind(addr).await?;
         println!("[Server] Listening on {}", addr);
         let server = Arc::new(self);
@@ -224,14 +239,9 @@ impl Server {
             let server_clone = Arc::clone(&server);
 
             tokio::spawn(async move {
-                let adapter = TcpAdapter::new(stream);
-                let conn = ProtocolConnection::new(adapter);
-                let session = ServerSession::new(conn, server_clone);
-
-                if let Err(e) = session.run().await {
+                let adapter = A::from(stream);
+                if let Err(e) = server_clone.handle_connection(adapter).await {
                     eprintln!("[Server] Session failed for {}: {}", client_addr, e);
-                } else {
-                    println!("[Server] Session with {} closed gracefully.", client_addr);
                 }
             });
         }

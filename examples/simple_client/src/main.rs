@@ -1,7 +1,7 @@
 //! An example MCP client that interacts with the fetch tool server and optional resources.
 
 use clap::Parser;
-use mcp_sdk::{Client, ResourceContents, Result};
+use mcp_sdk::{Client, NdjsonAdapter, ResourceContents, Result};
 use serde_json::json;
 
 // --- Command-Line Argument Parsing ---
@@ -19,7 +19,8 @@ async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
 
     println!("[Client] Connecting to server at {}...", addr);
-    let client = Client::connect(addr).await?;
+    let adapter1 = NdjsonAdapter::connect(addr).await.unwrap();
+    let client = Client::new(adapter1).await?;
     println!("[Client] Successfully connected.");
 
     // --- Always test tool methods ---

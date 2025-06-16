@@ -1,6 +1,6 @@
 //! An example demonstrating the use of `ClientSessionGroup` to connect to
 //! multiple, externally-run MCP servers.
-use mcp_sdk::{client::ClientSessionGroup, error::Result};
+use mcp_sdk::{client::ClientSessionGroup, error::Result, Client, NdjsonAdapter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,10 +18,13 @@ async fn main() -> Result<()> {
     println!("\n[GroupClient] Connecting to servers and adding to group...");
 
     // 2. Add clients for both external servers to the group.
-    group.add_client(server1_addr).await?;
+    let adapter1 = NdjsonAdapter::connect(server1_addr).await.unwrap();
+    let client1 = Client::new(adapter1).await.unwrap();
+    group.add_client(server1_addr.to_string(), client1).await?;
     println!("[GroupClient] Connected to {}", server1_addr);
-
-    group.add_client(server2_addr).await?;
+    let adapter2 = NdjsonAdapter::connect(server2_addr).await.unwrap();
+    let client2 = Client::new(adapter2).await.unwrap();
+    group.add_client(server2_addr.to_string(), client2).await?;
     println!("[GroupClient] Connected to {}", server2_addr);
 
     // 3. Use the group to list and aggregate tools from all connected servers.

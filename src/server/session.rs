@@ -1,8 +1,8 @@
 //! Defines the ServerSession, which manages the state and logic for a single client connection.
 
 use super::server::Server;
-use crate::adapter::NetworkAdapter;
 use crate::error::{Error, Result};
+use crate::network_adapter::NetworkAdapter;
 use crate::protocol::ProtocolConnection;
 use crate::types::{
     CallToolParams, ErrorData, ErrorResponse, GetPromptParams, Implementation,
@@ -51,6 +51,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
     }
 
     pub(crate) async fn run(mut self) -> Result<()> {
+        eprintln!("[Session] New session task started. Waiting for messages.");
         let (notification_tx, mut notification_rx) = mpsc::channel::<String>(32);
 
         loop {
@@ -137,6 +138,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
     }
 
     async fn handle_initialize(&mut self, raw_req: Value) -> Result<()> {
+        eprintln!("[Session] Initialize handshake started. Session is now in pending.");
         if let Some("initialize") = raw_req.get("method").and_then(Value::as_str) {
             let init_req: Request<InitializeRequestParams> = serde_json::from_value(raw_req)?;
             let init_response = Response {
@@ -153,6 +155,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
             };
             self.connection.send_serializable(init_response).await?;
             self.is_initialized = true;
+            eprintln!("[Session] Initialize handshake successful. Session is now initialized.");
             Ok(())
         } else {
             Err(Error::Other(
@@ -227,7 +230,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
 mod tests {
     use super::*;
     use crate::{
-        adapter::NetworkAdapter,
+        network_adapter::NetworkAdapter,
         server::server::Server,
         types::{CallToolResult, JSONRPCResponse, ListToolsChangedParams, Tool},
         ProtocolConnection,
