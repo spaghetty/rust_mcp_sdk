@@ -5,7 +5,7 @@ use mcp_sdk::{
     error::{Error, Result},
     CallToolResult, ConnectionHandle, Content, Server, StdioAdapter,
 };
-use rusqlite::{Connection, ToSql};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::info;
@@ -89,9 +89,7 @@ async fn execute_sql_handler(state: Arc<ServerState>, query: String) -> Result<S
             }
             Ok(result_text)
         } else {
-            let rows_affected = conn
-                .execute(&query, &[] as &[&dyn ToSql])
-                .map_err(to_sdk_error)?;
+            let rows_affected = conn.execute(&query, []).map_err(to_sdk_error)?;
             Ok(format!(
                 "Query executed successfully. Rows affected: {}",
                 rows_affected
