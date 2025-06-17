@@ -7,6 +7,51 @@
 use crate::error::Result;
 use crate::network_adapter::NetworkAdapter;
 use serde::{de::DeserializeOwned, Serialize};
+#[cfg(feature = "schema-validation")]
+use tracing::{error, info};
+
+#[cfg(feature = "schema-validation")]
+mod validator {
+    use super::*;
+    use crate::{types::LATEST_PROTOCOL_VERSION, Error};
+    use jsonschema;
+    use once_cell::sync::Lazy; // To ensure we only fetch the schema once.
+    use reqwest;
+    use serde_json::Value;
+
+    // The official URL for the raw JSON schema file.
+    const SCHEMA_URL: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
+
+    // This static variable will fetch and compile the schema exactly once.
+    // The first time it's accessed, the code inside the closure will run.
+    // Subsequent accesses will just get the cached, compiled schema.
+    static COMPILED_SCHEMA: Lazy<jsonschema::Validator> = Lazy::new(|| {
+        info!("[Validator] Fetching and compiling official MCP schema from URL...");
+        let schema_url = String::from(SCHEMA_URL).replace("**", LATEST_PROTOCOL_VERSION);
+        // Use a blocking HTTP client for this one-time fetch.
+        let schema_value: Value = reqwest::blocking::get(schema_url)
+            .expect("Failed to fetch schema from URL")
+            .json()
+            .expect("Failed to parse schema JSON");
+
+        let validator = jsonschema::validator_for(&schema_value)
+            .expect("Failed to compile official MCP schema");
+
+        info!("[Validator] Schema successfully compiled.");
+        validator
+    });
+    /// Validates a given JSON-RPC message (Request, Response, etc.) against the root schema.
+    /// The schema itself contains definitions for all message types.
+    pub fn validate_message(value: &Value) -> Result<()> {
+        match COMPILED_SCHEMA.validate(value) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(Error::Other(format!(
+                "Schema validation failed: {}",
+                error.to_string()
+            ))),
+        }
+    }
+}
 
 /// A connection that handles MCP protocol logic over a generic `NetworkAdapter`.
 pub struct ProtocolConnection<A: NetworkAdapter> {
@@ -21,7 +66,17 @@ impl<A: NetworkAdapter> ProtocolConnection<A> {
 
     /// Serializes a message struct into a JSON string and sends it via the adapter.
     pub async fn send_serializable<T: Serialize + Send + Sync>(&mut self, msg: T) -> Result<()> {
-        let json_string = serde_json::to_string(&msg)?;
+        let value = serde_json::to_value(&msg)?;
+
+        #[cfg(feature = "schema-validation")]
+        {
+            // If the feature is enabled, validate the JSON value before sending.
+            match validator::validate_message(&value) {
+                Ok(_) => info!("[Vaidator] Message is valid {}", value),
+                Err(e) => error!("[Validator] message {} is not valid for: {}", value, e),
+            }
+        }
+        let json_string = serde_json::to_string(&value)?;
         self.adapter.send(&json_string).await
     }
 

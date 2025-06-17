@@ -10,20 +10,27 @@ license = "MIT"
 [workspace]
 members = [
   ".",
+  "examples/debug_client",
   "examples/group-client",
   "examples/notification_client",
   "examples/prompt_client",
   "examples/simple_client",
   "examples/simple_server",
   "examples/unsafe_sql_server",
-  "examples/debug_client",
 ]
 
 [dependencies]
 async-trait = "0.1"
 # Add dashmap for concurrent request tracking
 dashmap = "5.5.3"
+jsonschema = { version = "0.30.0", optional = true }
+once_cell = { version = "1.19", optional = true }
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.41"
+
+[features]
+default = []
+schema-validation = ["dep:jsonschema", "dep:once_cell", "dep:reqwest"]

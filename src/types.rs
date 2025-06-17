@@ -77,6 +77,10 @@ pub struct PromptMessage {
 }
 
 // --- Result Types ---
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListToolsResult {
+    pub tools: Vec<Tool>,
+}
 
 /// The server's response to a `tools/call` request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

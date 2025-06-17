@@ -7,8 +7,8 @@ use crate::protocol::ProtocolConnection;
 use crate::types::{
     CallToolParams, ErrorData, ErrorResponse, GetPromptParams, Implementation,
     InitializeRequestParams, InitializeResult, ListPromptsParams, ListResourcesParams,
-    Notification, ReadResourceParams, Request, RequestId, Response, ServerCapabilities, Tool,
-    ToolsCapability, LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
+    ListToolsResult, Notification, ReadResourceParams, Request, RequestId, Response,
+    ServerCapabilities, Tool, ToolsCapability, LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -111,10 +111,11 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
         match req.method.as_str() {
             "tools/list" => {
                 let tools: Vec<Tool> = self.server.tools.values().cloned().collect();
+                let result = ListToolsResult { tools: tools };
                 let response = Response {
                     id: req.id,
                     jsonrpc: "2.0".to_string(),
-                    result: tools,
+                    result: result,
                 };
                 self.connection.send_serializable(response).await
             }

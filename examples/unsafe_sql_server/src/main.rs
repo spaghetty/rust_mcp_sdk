@@ -9,7 +9,8 @@ use rusqlite::Connection;
 use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tokio::signal::unix::{signal, SignalKind};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug, Clone)]
@@ -151,6 +152,14 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("Unable to set global tracing subscriber");
 
+    // Create channels to listen for termination signals.
+    let pid = std::process::id();
+    info!(pid, "Server process starting.");
+    // SIGTERM is the standard "graceful shutdown" signal.
+    let mut sigterm = signal(SignalKind::terminate())?;
+    // SIGINT is for Ctrl+C.
+    let mut sigint = signal(SignalKind::interrupt())?;
+
     info!("[Server] Initializing database at '{}'...", args.db_file);
     let conn = Connection::open(&args.db_file).map_err(to_sdk_error)?;
     conn.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending')", []).map_err(to_sdk_error)?;
@@ -201,8 +210,27 @@ async fn main() -> Result<()> {
 
     // ...and tells the server to handle the single stdio connection.
     info!("[Server] Starting session on stdio.");
-    server.handle_connection(adapter).await?;
-    info!("[Server] Stdio session ended.");
+
+    tokio::select! {
+        // Branch 1: The main server logic.
+        res = server.handle_connection(adapter) => {
+            if let Err(e) = res {
+                error!(error = %e, "Server handle_connection returned an error.");
+            }
+        },
+
+        // Branch 2: Listen for the SIGTERM signal.
+        _ = sigterm.recv() => {
+            warn!(pid, "Received SIGTERM signal. Process is being terminated externally.");
+        },
+
+        // Branch 3: Listen for the SIGINT signal (Ctrl+C).
+        _ = sigint.recv() => {
+            warn!(pid, "Received SIGINT (Ctrl+C) signal. Shutting down.");
+        }
+    }
+
+    info!(pid, "[Server] process exiting.");
 
     Ok(())
 }
