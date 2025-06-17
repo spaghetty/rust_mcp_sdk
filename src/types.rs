@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // --- Protocol Version ---
-pub const LATEST_PROTOCOL_VERSION: &str = "2025-03-26";
+pub const LATEST_PROTOCOL_VERSION: &str = "2024-11-05";
 
 // --- Core Public API Types ---
 
@@ -194,7 +194,9 @@ pub enum RequestId {
 pub struct Notification<T> {
     pub jsonrpc: String,
     pub method: String,
-    pub params: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub params: Option<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -304,7 +306,7 @@ pub struct GetPromptParams {
 }
 
 /// Parameters for the `tools/listChanged` notification. Currently empty.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListToolsChangedParams {}
 

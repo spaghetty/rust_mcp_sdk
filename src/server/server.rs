@@ -10,26 +10,19 @@ use crate::{
     },
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tracing::{error, info};
 
 // --- Handler Type Definitions ---
-pub(crate) type ListToolsHandler = Arc<
-    dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<Vec<Tool>>> + Send>>
+pub(crate) type ToolHandler = Arc<
+    dyn Fn(ConnectionHandle, Value) -> Pin<Box<dyn Future<Output = Result<CallToolResult>> + Send>>
         + Send
         + Sync,
 >;
-pub(crate) type CallToolHandler = Arc<
-    dyn Fn(
-            ConnectionHandle,
-            String,
-            Value,
-        ) -> Pin<Box<dyn Future<Output = Result<CallToolResult>> + Send>>
-        + Send
-        + Sync,
->;
+
 pub(crate) type ListResourcesHandler = Arc<
     dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<Vec<Resource>>> + Send>>
         + Send
@@ -69,30 +62,28 @@ pub(crate) type GetPromptHandler = Arc<
 ///
 /// ```no_run
 /// use mcp_sdk::server::{ConnectionHandle, Server};
-/// use mcp_sdk::types::{Tool, CallToolResult};
+/// use mcp_sdk::types::{Tool, CallToolResult, Content};
 /// use mcp_sdk::network_adapter::NdjsonAdapter;
 /// use mcp_sdk::Result;
 /// use serde_json::Value;
 ///
-/// async fn list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
-///     // ... logic to return a list of tools
-///     Ok(vec![])
-/// }
-///
-/// async fn call_tool_handler(
-///     _handle: ConnectionHandle,
-///     name: String,
-///     args: Value
-/// ) -> Result<CallToolResult> {
-///     // ... logic to execute a tool
-///     Ok(CallToolResult::default())
-/// }
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
-///     let server = Server::new("my-mcp-server")
-///         .on_list_tools(list_tools_handler)
-///         .on_call_tool(call_tool_handler);
+///     let server = Server::new("test").register_tool(
+///         Tool {
+///             name: "test-tool".to_string(),
+///             ..Default::default()
+///         },
+///         |_handle, _args| async {
+///             Ok(CallToolResult {
+///                 content: vec![Content::Text {
+///                     text: "Success!".to_string(),
+///                 }],
+///                 is_error: false,
+///             })
+///         },
+///     );
 ///
 ///     // This runs forever, handling connections until the process is stopped.
 ///     server.tcp_listen::<NdjsonAdapter>("127.0.0.1:8080").await?;
@@ -103,8 +94,8 @@ pub(crate) type GetPromptHandler = Arc<
 #[derive(Default, Clone)]
 pub struct Server {
     pub(crate) name: String,
-    pub(crate) list_tools_handler: Option<ListToolsHandler>,
-    pub(crate) call_tool_handler: Option<CallToolHandler>,
+    pub(crate) tools: HashMap<String, Tool>,
+    pub(crate) tool_handlers: HashMap<String, ToolHandler>,
     pub(crate) list_resources_handler: Option<ListResourcesHandler>,
     pub(crate) read_resource_handler: Option<ReadResourceHandler>,
     pub(crate) list_prompts_handler: Option<ListPromptsHandler>,
@@ -125,32 +116,18 @@ impl Server {
         }
     }
 
-    /// Registers a handler for the `tools/list` request.
-    ///
-    /// The provided closure will be executed whenever a client sends a `tools/list` request.
-    /// It receives a [`ConnectionHandle`] which can be used to send notifications back
-    /// to the client.
-    pub fn on_list_tools<F, Fut>(mut self, handler: F) -> Self
+    /// Registers a tool, its metadata, and its execution handler at the same time.
+    pub fn register_tool<F, Fut>(mut self, tool: Tool, handler: F) -> Self
     where
-        F: Fn(ConnectionHandle) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Vec<Tool>>> + Send + 'static,
-    {
-        self.list_tools_handler = Some(Arc::new(move |handle| Box::pin(handler(handle))));
-        self
-    }
-
-    /// Registers a handler for the `tools/call` request.
-    ///
-    /// The provided closure will be executed whenever a client sends a `tools/call` request.
-    /// It receives a [`ConnectionHandle`], the tool name, and the arguments for the call.
-    pub fn on_call_tool<F, Fut>(mut self, handler: F) -> Self
-    where
-        F: Fn(ConnectionHandle, String, Value) -> Fut + Send + Sync + 'static,
+        F: Fn(ConnectionHandle, Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<CallToolResult>> + Send + 'static,
     {
-        self.call_tool_handler = Some(Arc::new(move |handle, name, args| {
-            Box::pin(handler(handle, name, args))
-        }));
+        let tool_name = tool.name.clone();
+        self.tools.insert(tool_name.clone(), tool);
+        self.tool_handlers.insert(
+            tool_name,
+            Arc::new(move |handle, args| Box::pin(handler(handle, args))),
+        );
         self
     }
 
@@ -253,15 +230,33 @@ impl Server {
 mod tests {
     use super::*;
     use crate::types::{CallToolResult, ListPromptsResult};
+    use serde_json::json;
 
     #[tokio::test]
     async fn test_handler_registration() {
-        let server = Server::new("test")
-            .on_list_tools(|_| async { Ok(vec![]) })
-            .on_call_tool(|_, _, _| async { Ok(CallToolResult::default()) })
+        // 1. Setup
+        // Create a dummy tool definition
+        let dummy_tool = Tool {
+            name: "my-test-tool".to_string(),
+            description: Some("A tool for testing.".to_string()),
+            input_schema: json!({ "type": "object" }),
+            annotations: None,
+        };
+
+        // Create a dummy handler
+        let dummy_handler =
+            |_handle: ConnectionHandle, _args: Value| async { Ok(CallToolResult::default()) };
+        // 2. Action
+        // Create a server and register the tool
+        let server = Server::new("test-server")
+            .register_tool(dummy_tool.clone(), dummy_handler)
             .on_list_prompts(|_| async { Ok(ListPromptsResult { prompts: vec![] }) });
-        assert!(server.list_tools_handler.is_some());
-        assert!(server.call_tool_handler.is_some());
+        assert_eq!(server.tools.len(), 1);
+        assert!(server.tools.contains_key("my-test-tool"));
+        // Check that the tool's handler was added to the `tool_handlers` map.
+        assert_eq!(server.tool_handlers.len(), 1);
+        assert!(server.tool_handlers.contains_key("my-test-tool"));
+
         assert!(server.list_prompts_handler.is_some());
     }
 }

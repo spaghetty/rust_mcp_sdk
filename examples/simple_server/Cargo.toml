@@ -9,3 +9,4 @@ clap = { version = "4.5.4", features = ["derive"] }
 mcp-sdk = { path = "../.." }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1.41"

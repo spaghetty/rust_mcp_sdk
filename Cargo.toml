@@ -16,6 +16,7 @@ members = [
   "examples/simple_client",
   "examples/simple_server",
   "examples/unsafe_sql_server",
+  "examples/debug_client",
 ]
 
 [dependencies]

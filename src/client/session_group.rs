@@ -131,13 +131,8 @@ impl ClientSessionGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        network_adapter::NdjsonAdapter,
-        protocol::ProtocolConnection,
-        server::{session::ServerSession, ConnectionHandle, Server},
-        types::Tool,
-    };
-    use serde_json::json;
+    use crate::{network_adapter::NdjsonAdapter, server::Server, types::Tool};
+
     use std::time::Duration;
     use tokio::{net::TcpListener, task::JoinHandle};
 
@@ -145,49 +140,38 @@ mod tests {
     /// It creates a real TCP listener and runs an accept loop in the background,
     /// ensuring the server is ready before the test function proceeds.
     async fn setup_mock_server(tool_name: &'static str) -> (String, JoinHandle<()>) {
-        let server = Arc::new(Server::new("mock-server").on_list_tools(
-            move |_handle: ConnectionHandle| {
-                let tool = Tool {
-                    name: tool_name.to_string(),
-                    description: Some("A mock tool".to_string()),
-                    input_schema: json!({}),
-                    annotations: None,
-                };
-                async { Ok(vec![tool]) }
+        let server = Server::new("mock-server").register_tool(
+            Tool {
+                name: tool_name.to_string(),
+                ..Default::default()
             },
-        ));
+            move |_handle, _args| {
+                let _tool_list = vec![Tool {
+                    name: tool_name.to_string(),
+                    ..Default::default()
+                }];
+                async { Ok(crate::types::CallToolResult::default()) } // Dummy handler
+            },
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server_addr = listener.local_addr().unwrap().to_string();
+        let dup_server_addr = server_addr.clone();
+        drop(listener);
 
         let handle = tokio::spawn(async move {
-            loop {
-                // This select makes the loop cancellable when the JoinHandle is aborted.
-                tokio::select! {
-                    res = listener.accept() => {
-                        if let Ok((stream, _)) = res {
-                            let server_clone = Arc::clone(&server);
-                            tokio::spawn(async move {
-                                let session = ServerSession::new(
-                                    ProtocolConnection::new(NdjsonAdapter::from(stream)),
-                                    server_clone,
-                                );
-                                if let Err(e) = session.run().await {
-                                    if !e.to_string().contains("reset by peer") {
-                                        eprintln!("[Test Server] Session error: {}", e);
-                                    }
-                                }
-                            });
-                        } else {
-                            break; // Error accepting, break loop
-                        }
-                    }
-                    _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+            // The test server listens with the NdjsonAdapter.
+            if let Err(e) = server.tcp_listen::<NdjsonAdapter>(&server_addr).await {
+                if !e.to_string().contains("reset by peer") {
+                    eprintln!("[Test Server] Listen error: {}", e);
                 }
             }
         });
 
-        (server_addr, handle)
+        // Give the server a moment to start up to avoid race conditions.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        (dup_server_addr, handle)
     }
 
     #[tokio::test]

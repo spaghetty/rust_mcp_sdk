@@ -13,8 +13,10 @@ use mcp_sdk::{
     ListToolsChangedParams, Notification, Prompt, ReadResourceResult, Resource, ResourceContents,
     Server, TextResourceContents, Tool,
 };
+use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
+use tracing::info;
 
 // --- Command-Line Argument Parsing ---
 #[derive(Parser, Debug, Clone)]
@@ -31,72 +33,6 @@ struct Args {
 
 // --- Handler Implementations ---
 
-async fn list_tools_handler(suffix: String, _handle: ConnectionHandle) -> Result<Vec<Tool>> {
-    let tool_name = format!("fetch{}", suffix);
-    println!("[Server{}] Handler invoked: list_tools_handler", suffix);
-    Ok(vec![
-        Tool {
-            name: tool_name,
-            description: Some("Fetches a website and returns its content".to_string()),
-            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-            annotations: None,
-        },
-        Tool {
-            name: "trigger_notification".to_string(),
-            description: Some(
-                "Asks the server to send a 'tools/listChanged' notification.".to_string(),
-            ),
-            input_schema: serde_json::json!({ "type": "object" }),
-            annotations: None,
-        },
-    ])
-}
-
-async fn call_tool_handler(
-    suffix: String,
-    handle: ConnectionHandle,
-    name: String,
-    args: Value,
-) -> Result<CallToolResult> {
-    println!(
-        "[Server{}] Handler invoked: call_tool with name='{}'",
-        suffix, name
-    );
-
-    match name.as_str() {
-        "trigger_notification" => {
-            println!(
-                "[Server{}] Sending 'tools/listChanged' notification...",
-                suffix
-            );
-            handle
-                .send_notification(Notification {
-                    jsonrpc: "2.0".to_string(),
-                    method: "notifications/tools/list_changed".to_string(),
-                    params: ListToolsChangedParams {},
-                })
-                .await?;
-            Ok(CallToolResult {
-                content: vec![Content::Text {
-                    text: "Notification sent!".to_string(),
-                }],
-                is_error: false,
-            })
-        }
-        // Handle the dynamically named fetch tool
-        tool_name if tool_name == format!("fetch{}", suffix) => {
-            let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
-            println!("[Server{}] Simulating fetch for URL: {}", suffix, url);
-            Ok(CallToolResult {
-                content: vec![Content::Text {
-                    text: format!("Mock content of {}", url),
-                }],
-                is_error: false,
-            })
-        }
-        _ => Err(Error::Other(format!("Unknown tool called: {}", name))),
-    }
-}
 async fn list_resources_handler(
     suffix: String,
     _handle: ConnectionHandle,
@@ -168,14 +104,56 @@ async fn main() -> Result<()> {
     let addr = format!("127.0.0.1:{}", args.port);
 
     let server = Server::new("mcp-configurable-server")
-        .on_list_tools({
-            let args = Arc::clone(&args);
-            move |handle| list_tools_handler(args.suffix.clone(), handle)
-        })
-        .on_call_tool({
-            let args = Arc::clone(&args);
-            move |handle, name, value| call_tool_handler(args.suffix.clone(), handle, name, value)
-        })
+        // Register the first tool and its handler logic directly.
+        .register_tool(
+            Tool {
+                name: format!("fetch{}", args.suffix),
+                description: Some("Fetches a website and returns its content".to_string()),
+                input_schema: json!({ "type": "object", "properties": { "url": { "type": "string" } } }),
+                annotations: None,
+            },
+            {
+                // Capture the suffix for use in the handler.
+                let suffix = args.suffix.clone();
+                move |_handle: ConnectionHandle, args: Value| {
+                    let sfx_value = suffix.clone();
+                    async move {
+                        let url = args.get("url").and_then(Value::as_str).unwrap_or("Unknown");
+                        info!("[Server{}] Simulating fetch for URL: {}", sfx_value, url);
+                        Ok(CallToolResult {
+                            content: vec![Content::Text {
+                                text: format!("Mock content of {}", url),
+                            }],
+                            is_error: false,
+                        })
+                    }
+                }
+            },
+        )
+        .register_tool(
+            Tool {
+                name: "trigger_notification".to_string(),
+                description: Some("Asks the server to send a 'tools/listChanged' notification.".to_string()),
+                input_schema: json!({ "type": "object" }),
+                annotations: None,
+            },
+            |handle: ConnectionHandle, _args: Value| async move {
+                info!("Sending 'tools/listChanged' notification...");
+                handle
+                    .send_notification(Notification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "notifications/tools/list_changed".to_string(),
+                        params: Some(ListToolsChangedParams {}),
+                    })
+                    .await?;
+                Ok(CallToolResult {
+                    content: vec![Content::Text {
+                        text: "Notification sent!".to_string(),
+                    }],
+                    is_error: false,
+                })
+            },
+        )
         .on_list_resources({
             let args = Arc::clone(&args);
             move |handle| list_resources_handler(args.suffix.clone(), handle)

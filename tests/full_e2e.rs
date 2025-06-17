@@ -13,38 +13,6 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-// --- Mock Handlers (with updated signatures) ---
-
-// UPDATED: All mock handlers now return the SDK's custom Result type.
-async fn mock_list_tools_handler(_handle: ConnectionHandle) -> Result<Vec<Tool>> {
-    Ok(vec![Tool {
-        name: "e2e-test-tool".to_string(),
-        description: Some("An end-to-end test tool".to_string()),
-        input_schema: json!({ "type": "object" }),
-        annotations: None,
-    }])
-}
-
-async fn mock_call_tool_handler(
-    _handle: ConnectionHandle,
-    name: String,
-    _args: Value,
-) -> Result<CallToolResult> {
-    if name != "e2e-test-tool" {
-        // In a real application, you might use a more specific error variant.
-        return Err(mcp_sdk::Error::Other(format!(
-            "Unknown tool in e2e test: {}",
-            name
-        )));
-    }
-    Ok(CallToolResult {
-        content: vec![Content::Text {
-            text: "e2e test successful".to_string(),
-        }],
-        is_error: false,
-    })
-}
-
 async fn mock_list_resources_handler(_handle: ConnectionHandle) -> Result<Vec<Resource>> {
     Ok(vec![Resource {
         uri: "mcp://e2e/file.txt".to_string(),
@@ -136,9 +104,13 @@ async fn setup_test_server(server: Server) -> (String, JoinHandle<()>) {
 #[tokio::test]
 async fn test_full_client_server_interaction() {
     let test_body = async {
-        let server = Server::new("mcp-e2e-test-server")
-            .on_list_tools(mock_list_tools_handler)
-            .on_call_tool(mock_call_tool_handler);
+        let server = Server::new("mcp-e2e-test-server").register_tool(
+            Tool {
+                name: "e2e-test-tool".to_string(),
+                ..Default::default()
+            },
+            |_handle, _args| async { Ok(CallToolResult::default()) },
+        );
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
         let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
@@ -207,9 +179,13 @@ async fn test_full_prompt_interaction() {
 #[tokio::test]
 async fn test_multiple_interactions_on_one_connection() {
     let test_body = async {
-        let server = Server::new("mcp-multi-test")
-            .on_list_tools(mock_list_tools_handler)
-            .on_call_tool(mock_call_tool_handler);
+        let server = Server::new("mcp-e2e-test-server").register_tool(
+            Tool {
+                name: "e2e-test-tool".to_string(),
+                ..Default::default()
+            },
+            |_handle, _args| async { Ok(CallToolResult::default()) },
+        );
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
         let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
@@ -231,7 +207,7 @@ async fn test_multiple_interactions_on_one_connection() {
 #[tokio::test]
 async fn test_call_unregistered_tool_returns_error() {
     let test_body = async {
-        let server = Server::new("mcp-error-test").on_list_tools(mock_list_tools_handler);
+        let server = Server::new("mcp-error-test");
 
         let (server_addr, _server_handle) = setup_test_server(server).await;
         let adapter1 = NdjsonAdapter::connect(&server_addr).await.unwrap();
@@ -243,7 +219,7 @@ async fn test_call_unregistered_tool_returns_error() {
         let error_message = result.unwrap_err().to_string();
         // UPDATED: Check for the new error message format.
         assert!(error_message.contains("JSON-RPC error"));
-        assert!(error_message.contains("has no registered handler"));
+        assert!(error_message.contains("not found"));
     };
 
     tokio::time::timeout(Duration::from_secs(6), test_body)

@@ -3,12 +3,13 @@
 use clap::Parser;
 use mcp_sdk::{
     error::{Error, Result},
-    CallToolResult, ConnectionHandle, Content, Server, StdioAdapter,
+    CallToolResult, ConnectionHandle, Content, Server, StdioAdapter, Tool,
 };
 use rusqlite::Connection;
+use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug, Clone)]
@@ -27,13 +28,23 @@ fn to_sdk_error<E: std::fmt::Display>(err: E) -> Error {
     Error::Other(err.to_string())
 }
 
-async fn get_schema_handler(state: Arc<ServerState>) -> Result<String> {
+async fn get_schema_handler(
+    state: Arc<ServerState>,
+    _handle: ConnectionHandle,
+    _args: Value,
+) -> Result<CallToolResult> {
+    info!("Handling 'get_schema' request");
     let db_path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || {
+
+    // The closure now explicitly returns our SDK's Result type.
+    let result_text = tokio::task::spawn_blocking(move || -> Result<String> {
         let conn = Connection::open(db_path).map_err(to_sdk_error)?;
         let mut stmt = conn.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';").map_err(to_sdk_error)?;
         let mut rows = stmt.query([]).map_err(to_sdk_error)?;
         let mut schema_text = String::new();
+
+        // Every `?` inside this loop now operates on a `rusqlite::Result`,
+        // so we must map the error type for each one.
         while let Some(row) = rows.next().map_err(to_sdk_error)? {
             let table_name: String = row.get(0).map_err(to_sdk_error)?;
             let sql: String = row.get(1).map_err(to_sdk_error)?;
@@ -41,35 +52,44 @@ async fn get_schema_handler(state: Arc<ServerState>) -> Result<String> {
         }
         Ok(schema_text)
     })
-    .await
-    .map_err(to_sdk_error)? // Convert JoinError
+    .await.map_err(to_sdk_error)??; // The outer `??` handles JoinError and the inner Result
+
+    Ok(CallToolResult {
+        content: vec![Content::Text { text: result_text }],
+        is_error: false,
+    })
 }
 
-async fn execute_sql_handler(state: Arc<ServerState>, query: String) -> Result<String> {
+async fn execute_sql_handler(
+    state: Arc<ServerState>,
+    _handle: ConnectionHandle,
+    args: Value,
+) -> Result<CallToolResult> {
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Other("Missing 'query' argument for execute_sql".into()))?;
+
     let db_path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || {
-        println!("[DB] Executing query: {}", query);
+    let query_clone = query.to_string();
+
+    let result_text = tokio::task::spawn_blocking(move || -> Result<String> {
+        debug!(query = %query_clone, "Executing SQL");
         let conn = Connection::open(db_path).map_err(to_sdk_error)?;
 
-        if query.trim().to_lowercase().starts_with("select") {
-            let mut stmt = conn.prepare(&query).map_err(to_sdk_error)?;
-
-            // --- CORRECTED LOGIC ---
-            // 1. Get info from the statement BEFORE creating the row iterator.
+        if query_clone.trim().to_lowercase().starts_with("select") {
+            let mut stmt = conn.prepare(&query_clone).map_err(to_sdk_error)?;
             let column_names: Vec<String> = stmt
                 .column_names()
                 .into_iter()
                 .map(|s| s.to_string())
                 .collect();
             let column_count = stmt.column_count();
-
-            // 2. NOW, create the row iterator. `stmt` is now borrowed by `rows`.
             let mut rows = stmt.query([]).map_err(to_sdk_error)?;
             let mut result_text = String::new();
             result_text.push_str(&column_names.join(" | "));
             result_text.push('\n');
 
-            // 3. Loop through the rows.
             while let Some(row) = rows.next().map_err(to_sdk_error)? {
                 for i in 0..column_count {
                     let value: rusqlite::types::Value = row.get(i).map_err(to_sdk_error)?;
@@ -89,7 +109,7 @@ async fn execute_sql_handler(state: Arc<ServerState>, query: String) -> Result<S
             }
             Ok(result_text)
         } else {
-            let rows_affected = conn.execute(&query, []).map_err(to_sdk_error)?;
+            let rows_affected = conn.execute(&query_clone, []).map_err(to_sdk_error)?;
             Ok(format!(
                 "Query executed successfully. Rows affected: {}",
                 rows_affected
@@ -97,26 +117,7 @@ async fn execute_sql_handler(state: Arc<ServerState>, query: String) -> Result<S
         }
     })
     .await
-    .map_err(to_sdk_error)?
-}
-
-async fn call_tool_dispatcher(
-    state: Arc<ServerState>,
-    _handle: ConnectionHandle,
-    name: String,
-    args: Value,
-) -> Result<CallToolResult> {
-    let result_text = match name.as_str() {
-        "get_schema" => get_schema_handler(state).await?,
-        "execute_sql" => {
-            let query = args
-                .get("query")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::Other("Missing 'query' argument for execute_sql".into()))?;
-            execute_sql_handler(state, query.to_string()).await?
-        }
-        _ => return Err(Error::Other(format!("Unknown tool called: {}", name))),
-    };
+    .map_err(to_sdk_error)??;
 
     Ok(CallToolResult {
         content: vec![Content::Text { text: result_text }],
@@ -157,12 +158,44 @@ async fn main() -> Result<()> {
     let shared_state = Arc::new(ServerState {
         db_path: args.db_file,
     });
-    let server = Server::new("unsafe-sql-server").on_call_tool({
-        let state = Arc::clone(&shared_state);
-        move |handle, name, value| call_tool_dispatcher(state.clone(), handle, name, value)
-    });
+    let server = Server::new("unsafe-sql-server")
+        .register_tool(
+            Tool {
+                name: "get_schema".to_string(),
+                description: Some("Retrieves the SQL schema for all tables.".to_string()),
+                input_schema: json!({ "type": "object", "properties": {} }),
+                annotations: None,
+            },
+            // Register the specific handler for this tool.
+            {
+                let state = Arc::clone(&shared_state);
+                move |handle, args| get_schema_handler(state.clone(), handle, args)
+            },
+        )
+        .register_tool(
+            Tool {
+                name: "execute_sql".to_string(),
+                description: Some("Executes a raw SQL query against the database.".to_string()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The SQL query to execute."
+                        }
+                    },
+                    "required": ["query"]
+                }),
+                annotations: None,
+            },
+            // Register the specific handler for this tool.
+            {
+                let state = Arc::clone(&shared_state);
+                move |handle, args| execute_sql_handler(state.clone(), handle, args)
+            },
+        );
 
-    // --- Final Execution Logic for Stdio ---
+    // Use the simple `serve()` method for stdio communication with Warp.
     // The main function explicitly creates the adapter...
     let adapter = StdioAdapter::new();
 

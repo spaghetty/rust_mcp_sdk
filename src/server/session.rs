@@ -7,8 +7,8 @@ use crate::protocol::ProtocolConnection;
 use crate::types::{
     CallToolParams, ErrorData, ErrorResponse, GetPromptParams, Implementation,
     InitializeRequestParams, InitializeResult, ListPromptsParams, ListResourcesParams,
-    ListToolsParams, Notification, ReadResourceParams, Request, RequestId, Response,
-    LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
+    Notification, ReadResourceParams, Request, RequestId, Response, ServerCapabilities, Tool,
+    ToolsCapability, LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -60,7 +60,12 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                 result = self.connection.recv_message::<Value>() => {
                     let raw_req = match result {
                         Ok(Some(msg)) => msg,
-                        Ok(None) | Err(_) => {
+                        Ok(None) => {
+                            info!("[Session] some empty message received");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            info!("[Session] something strage here {}",e);
                             notification_rx.close();
                             while let Some(notif_json) = notification_rx.recv().await {
                                 self.connection.send_raw(&notif_json).await?;
@@ -81,6 +86,22 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
     }
 
     async fn dispatch_request(&mut self, raw_req: Value, handle: ConnectionHandle) -> Result<()> {
+        if raw_req.get("id").is_none() && raw_req.get("method").is_some() {
+            // Attempt to parse as a generic notification to get the method name.
+            if let Ok(notif) = serde_json::from_value::<Notification<Value>>(raw_req.clone()) {
+                if notif.method == "notifications/initialized" {
+                    // LSP spec uses "initialized", not "notifications/initialized"
+                    info!("[Session] Successful setup notification from client received.");
+                    // It's a notification, so we do nothing and wait for the next message.
+                    return Ok(());
+                } else {
+                    info!("Received unknown notification: {}", notif.method);
+                }
+            } else {
+                info!("Received unparsable notification");
+            }
+        }
+
         if !self.is_initialized {
             return self.handle_initialize(raw_req).await;
         }
@@ -89,16 +110,33 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
 
         match req.method.as_str() {
             "tools/list" => {
-                let handler = self.server.list_tools_handler.clone();
-                self.dispatch(req, &handler, |h, _: ListToolsParams| h(handle.clone()))
-                    .await
+                let tools: Vec<Tool> = self.server.tools.values().cloned().collect();
+                let response = Response {
+                    id: req.id,
+                    jsonrpc: "2.0".to_string(),
+                    result: tools,
+                };
+                self.connection.send_serializable(response).await
             }
             "tools/call" => {
-                let handler = self.server.call_tool_handler.clone();
-                self.dispatch(req, &handler, |h, p: CallToolParams| {
-                    h(handle.clone(), p.name, p.arguments)
-                })
-                .await
+                let params: CallToolParams = serde_json::from_value(req.params)?;
+                if let Some(handler) = self.server.tool_handlers.get(&params.name) {
+                    // Look up the specific handler and call it.
+                    let result = handler(handle, params.arguments).await?;
+                    let response = Response {
+                        id: req.id,
+                        jsonrpc: "2.0".to_string(),
+                        result,
+                    };
+                    self.connection.send_serializable(response).await
+                } else {
+                    self.send_error(
+                        req.id,
+                        METHOD_NOT_FOUND,
+                        &format!("Tool '{}' not found", params.name),
+                    )
+                    .await
+                }
             }
             "resources/list" => {
                 let handler = self.server.list_resources_handler.clone();
@@ -142,6 +180,19 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
         info!("[Session] Initialize handshake started. Session is now in pending.");
         if let Some("initialize") = raw_req.get("method").and_then(Value::as_str) {
             let init_req: Request<InitializeRequestParams> = serde_json::from_value(raw_req)?;
+            // --- DYNAMIC CAPABILITIES LOGIC ---
+            // 1. Start with default, empty capabilities.
+            let mut capabilities = ServerCapabilities::default();
+
+            // 2. Check if any tools have been registered.
+            if !self.server.tools.is_empty() {
+                // If so, add the "tools" capability to our announcement.
+                capabilities.tools = Some(ToolsCapability {
+                    // For now, we can hardcode this sub-capability to false.
+                    // It signals that we don't support the `tools/listChanged` notification.
+                    list_changed: Some(false),
+                });
+            }
             let init_response = Response {
                 jsonrpc: "2.0".to_string(),
                 id: init_req.id,
@@ -151,7 +202,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                         name: self.server.name.clone(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     },
-                    capabilities: Default::default(),
+                    capabilities: capabilities,
                 },
             };
             self.connection.send_serializable(init_response).await?;
@@ -233,7 +284,7 @@ mod tests {
     use crate::{
         network_adapter::NetworkAdapter,
         server::server::Server,
-        types::{CallToolResult, JSONRPCResponse, ListToolsChangedParams, Tool},
+        types::{CallToolResult, Content, JSONRPCResponse, ListToolsChangedParams, Tool},
         ProtocolConnection,
     };
     use async_trait::async_trait;
@@ -295,9 +346,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_dispatches_request() {
-        let server = Arc::new(
-            Server::new("test").on_list_tools(|_handle| async { Ok(vec![Tool::default()]) }),
-        );
+        // 1. Setup the server with a specific tool and its handler.
+        let server = Arc::new(Server::new("test").register_tool(
+            Tool {
+                name: "test-tool".to_string(),
+                ..Default::default()
+            },
+            |_handle, _args| async {
+                Ok(CallToolResult {
+                    content: vec![Content::Text {
+                        text: "Success!".to_string(),
+                    }],
+                    is_error: false,
+                })
+            },
+        ));
 
         let list_req = serde_json::to_string(
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }),
@@ -320,19 +383,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_sends_notification() {
-        let server = Arc::new(Server::new("test").on_call_tool(|handle, _, _| async move {
-            handle
-                .send_notification(Notification {
-                    jsonrpc: "2.0".to_string(),
-                    method: "test/notification".to_string(),
-                    params: ListToolsChangedParams {},
-                })
-                .await
-                .unwrap();
-            Ok(CallToolResult::default())
-        }));
+        // 1. Setup a tool whose handler sends a notification.
+        let server = Arc::new(Server::new("test").register_tool(
+            Tool {
+                name: "notification-tool".to_string(),
+                ..Default::default()
+            },
+            |handle, _args| async move {
+                handle
+                    .send_notification(Notification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "test/notification".to_string(),
+                        params: Some(ListToolsChangedParams {}),
+                    })
+                    .await
+                    .unwrap();
+                Ok(CallToolResult::default())
+            },
+        ));
 
-        let call_req = serde_json::to_string(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "foo", "arguments": {}} })).unwrap();
+        let call_req = serde_json::to_string(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "notification-tool", "arguments": {}} })).unwrap();
         let outgoing = run_session_with_requests(server, vec![make_init_request(), call_req]).await;
 
         let responses = outgoing.lock().unwrap();
@@ -342,39 +412,36 @@ mod tests {
         assert!(notif_found, "The test notification was not found");
     }
     #[tokio::test]
-    async fn test_handler_error_sends_jsonrpc_error() {
-        // 1. Create a handler that is guaranteed to fail.
-        let server = Arc::new(Server::new("test").on_list_tools(|_handle| async {
-            // This handler returns our custom SDK Error.
-            Err(Error::Other("This handler failed on purpose".into()))
-        }));
+    async fn test_call_nonexistent_tool_sends_error() {
+        // 1. Setup a server with NO tools registered.
+        let server = Arc::new(Server::new("test"));
 
-        // 2. Send a request to the failing handler.
-        let list_req = serde_json::to_string(
-            &json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": {} }),
-        )
+        // 2. Create a request to call a tool that does not exist.
+        let call_req = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {"name": "nonexistent-tool", "arguments": {}}
+        }))
         .unwrap();
-        let outgoing = run_session_with_requests(server, vec![make_init_request(), list_req]).await;
 
-        // 3. Check the server's response.
+        // 3. Run the session.
+        let outgoing = run_session_with_requests(server, vec![make_init_request(), call_req]).await;
+
+        // 4. Assert that the server sent back a well-formed "Method not found" error.
         let responses = outgoing.lock().unwrap();
-        assert_eq!(responses.len(), 2); // Should get init response and an error response.
-
-        // Find the error response by its request ID.
-        let error_response_str = responses
-            .iter()
-            .find(|s| s.contains("\"id\":99"))
-            .expect("Could not find response for request id 99");
-
-        // 4. Assert that the response is a well-formed JSON-RPC error.
+        let error_response_str = responses.iter().find(|s| s.contains("\"id\":101")).unwrap();
         let error_response: JSONRPCResponse<Value> =
             serde_json::from_str(error_response_str).unwrap();
 
         match error_response {
             JSONRPCResponse::Success(_) => panic!("Expected an error response, but got success"),
             JSONRPCResponse::Error(err) => {
-                assert_eq!(err.error.code, crate::types::INTERNAL_ERROR);
-                assert!(err.error.message.contains("This handler failed on purpose"));
+                assert_eq!(err.error.code, crate::types::METHOD_NOT_FOUND);
+                assert!(err
+                    .error
+                    .message
+                    .contains("Tool 'nonexistent-tool' not found"));
             }
         }
     }

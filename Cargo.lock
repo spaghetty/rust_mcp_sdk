@@ -222,6 +222,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug_client"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "mcp-sdk",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "deranged"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -657,6 +669,7 @@ dependencies = [
  "mcp-sdk",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

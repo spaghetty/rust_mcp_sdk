@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "unsafe-sql-server": {
+      "command": "/Users/spaghetty/Projects/mcp/rust_mcp_sdk/target/debug/unsafe-sql-server-example",
+      "args": ["--db-file", "/Users/spaghetty/Projects/mcp/local_database.db"],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}
+
