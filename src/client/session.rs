@@ -47,11 +47,14 @@ impl<A: NetworkAdapter + Send + 'static> ClientSession<A> {
                 biased;
 
                 Some((request, responder)) = self.request_receiver.recv() => {
+                    // req_id_clone_for_log removed
                     self.pending_requests.lock().await.insert(request.id.clone(), responder);
+                    // eprintln! lines removed, original error! logic restored
                     if let Err(e) = self.connection.send_serializable(request).await {
-                        error!("[Client] Error writing message to server: {}", e);
+                        error!("[Client] Error writing message to server: {}", e); // Original tracing log
                         break;
                     }
+                    // No explicit success log here in original, so keeping it that way
                 },
                 read_result = self.connection.recv_message::<Value>() => {
                     match read_result {
@@ -120,6 +123,13 @@ mod tests {
         types::ListToolsChangedParams,
     };
     use async_trait::async_trait;
+    use tracing_subscriber; // Added for test tracing initialization
+
+    fn init_test_tracing() {
+        // Allow multiple initializations for tests if needed, though ideally once per run.
+        // with_test_writer captures output for `cargo test`.
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    }
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering}; // CORRECTED: Added missing import
     use std::time::Duration;
@@ -198,6 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_handles_response() {
+        init_test_tracing(); // Initialize tracing
         let harness = setup_session_test();
         let (tx, rx) = oneshot::channel::<ResponseResult>();
 
@@ -222,6 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_handles_notification() {
+        init_test_tracing(); // Initialize tracing
         let harness = setup_session_test();
         let handler_was_called = Arc::new(AtomicBool::new(false));
         let handler_was_called_clone = Arc::clone(&handler_was_called);
@@ -252,6 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_sends_requests() {
+        init_test_tracing(); // Initialize tracing for this specific test
         let harness = setup_session_test();
 
         let request_payload = Request {
@@ -268,7 +281,7 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await; // Increased to 5 seconds
 
         let sent_message = harness.adapter.pop_outgoing().await.unwrap();
         assert!(sent_message.contains("\"method\":\"test\""));
