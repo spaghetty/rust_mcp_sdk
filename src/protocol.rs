@@ -15,36 +15,72 @@ mod validator {
     use super::*;
     use crate::{types::LATEST_PROTOCOL_VERSION, Error};
     use jsonschema;
-    use reqwest; // For HTTP client
     use serde_json::Value;
-    use tokio::sync::OnceCell; // For async OnceCell
-    use tracing::info; // error is no longer used in this module directly
+    use tokio::sync::OnceCell;
+    use tracing::{info, warn}; // Added warn
 
-    // The official URL for the raw JSON schema file.
-    // This needs to be accessible by get_or_init_schema, so ensure correct path.
-    // It was `super::SCHEMA_URL` in prompt, but `SCHEMA_URL` is in the same module.
-    const SCHEMA_URL_VAL: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
+    // Conditional imports
+    #[cfg(test)]
+    use std::{fs, path::Path};
+    #[cfg(not(test))]
+    use reqwest; // reqwest only needed for non-test
 
+    const SCHEMA_URL_CONST: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
 
-    // Use tokio::sync::OnceCell for async initialization
-    // Assuming jsonschema::Validator is the correct type alias or struct for the compiled schema object.
-    // If jsonschema::validator_for returns jsonschema::JSONSchema, this should be jsonschema::JSONSchema.
-    // Let's assume jsonschema::Validator is an alias or the type returned by validator_for.
     static ASYNC_INIT_SCHEMA: OnceCell<jsonschema::Validator> = OnceCell::const_new();
 
     async fn get_or_init_schema() -> &'static jsonschema::Validator {
         ASYNC_INIT_SCHEMA.get_or_init(|| async {
-            info!("[Validator] Fetching and compiling official MCP schema from URL (async)...");
-            let schema_url = String::from(SCHEMA_URL_VAL).replace("**", LATEST_PROTOCOL_VERSION);
+            info!("[Validator] Initializing schema (async)...");
 
-            // Perform blocking HTTP get and JSON parsing in spawn_blocking
-            let schema_value = match tokio::task::spawn_blocking(move || {
-                reqwest::blocking::get(schema_url)?
-                    .json::<Value>() // Value is serde_json::Value
-            }).await {
+            let schema_content_loader = || -> std::result::Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+                let schema_url_val = String::from(SCHEMA_URL_CONST).replace("**", LATEST_PROTOCOL_VERSION);
+
+                #[cfg(test)]
+                {
+                    let version = LATEST_PROTOCOL_VERSION;
+                    let local_schema_path_str = format!("schemas/{}/schema.json", version);
+                    let local_schema_path = Path::new(&local_schema_path_str);
+
+                    info!("[Validator] TEST MODE: Attempting to load schema from local file: {}", local_schema_path_str);
+                    if local_schema_path.exists() {
+                        match fs::read_to_string(local_schema_path) {
+                            Ok(file_content) => {
+                                match serde_json::from_str::<Value>(&file_content) {
+                                    Ok(schema_value) => {
+                                        info!("[Validator] TEST MODE: Successfully loaded schema from local file: {}", local_schema_path_str);
+                                        return Ok(schema_value);
+                                    }
+                                    Err(e) => {
+                                        warn!("[Validator] TEST MODE: Failed to parse local schema JSON from '{}'. Error: {}. Falling back to network fetch.", local_schema_path_str, e);
+                                        // Proceed to network fetch below
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[Validator] TEST MODE: Failed to read local schema file '{}'. Error: {}. Falling back to network fetch.", local_schema_path_str, e);
+                                // Proceed to network fetch below
+                            }
+                        }
+                    } else {
+                        info!("[Validator] TEST MODE: Local schema file not found at '{}'. Falling back to network fetch.", local_schema_path_str);
+                        // Proceed to network fetch below
+                    }
+                }
+
+                // Network fetch (executes if not test, or if test mode failed to return Ok above)
+                info!("[Validator] Fetching schema from URL: {}", schema_url_val);
+                let fetched_value = reqwest::blocking::get(schema_url_val)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                    .json::<Value>()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                Ok(fetched_value)
+            };
+
+            let schema_value = match tokio::task::spawn_blocking(schema_content_loader).await {
                 Ok(Ok(val)) => val,
-                Ok(Err(e)) => panic!("Failed to fetch or parse schema JSON: {}", e), // Or convert to your Error type
-                Err(join_err) => panic!("Failed to join spawn_blocking for schema fetch: {}", join_err),
+                Ok(Err(e)) => panic!("Schema content loader failed: {}", e),
+                Err(join_err) => panic!("Spawn_blocking for schema content loader panicked: {}", join_err),
             };
 
             // Perform blocking schema compilation in spawn_blocking
