@@ -1,8 +1,8 @@
+#[allow(dead_code)]
 #[cfg(test)]
 mod tool_arguments_derive_tests {
     use mcp_sdk::ToolArguments; // The re-exported derive macro from mcp_sdk crate
-    use mcp_sdk::ToolArgumentsDescriptor; // The trait from mcp_sdk crate
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     // 1. Basic Struct
     #[derive(ToolArguments)]
@@ -43,9 +43,12 @@ mod tool_arguments_derive_tests {
         assert_eq!(schema["properties"]["id"]["type"], "string");
         assert_eq!(schema["properties"]["description"]["type"], "string"); // Option<String> maps to "string" for schema type
 
-        let required_fields: Vec<String> = schema["required"]
-            .as_array()
-            .map_or_else(Vec::new, |arr| arr.iter().map(|v| v.as_str().unwrap().to_string()).collect());
+        let required_fields: Vec<String> =
+            schema["required"].as_array().map_or_else(Vec::new, |arr| {
+                arr.iter()
+                    .map(|v| v.as_str().unwrap().to_string())
+                    .collect()
+            });
 
         assert!(required_fields.contains(&"id".to_string()));
         assert!(!required_fields.contains(&"description".to_string()));
@@ -89,7 +92,10 @@ mod tool_arguments_derive_tests {
     #[test]
     fn test_desc_args() {
         let schema = DescArgs::mcp_input_schema();
-        assert_eq!(schema["properties"]["id"]["description"], "The unique identifier.");
+        assert_eq!(
+            schema["properties"]["id"]["description"],
+            "The unique identifier."
+        );
         assert_eq!(schema["properties"]["id"]["type"], "string");
     }
 
@@ -142,7 +148,7 @@ mod tool_arguments_derive_tests {
     struct RequiredOverrideArgs {
         #[tool_arg(required = false)] // Make non-Option not required
         name: String,
-        #[tool_arg(required = true)]  // Make Option required
+        #[tool_arg(required = true)] // Make Option required
         description: Option<String>,
         // Implicitly required Option
         #[tool_arg(required = true)]
@@ -160,15 +166,35 @@ mod tool_arguments_derive_tests {
         assert_eq!(schema["properties"]["code"]["type"], "integer");
         assert_eq!(schema["properties"]["status"]["type"], "string");
 
-        let required_fields: Vec<String> = schema["required"]
-            .as_array()
-            .map_or_else(Vec::new, |arr| arr.iter().map(|v| v.as_str().unwrap().to_string()).collect());
+        let required_fields: Vec<String> =
+            schema["required"].as_array().map_or_else(Vec::new, |arr| {
+                arr.iter()
+                    .map(|v| v.as_str().unwrap().to_string())
+                    .collect()
+            });
 
-        assert!(!required_fields.contains(&"name".to_string()), "name should not be required");
-        assert!(required_fields.contains(&"description".to_string()), "description should be required");
-        assert!(required_fields.contains(&"code".to_string()), "code should be required");
-        assert!(!required_fields.contains(&"status".to_string()), "status should not be required");
-        assert_eq!(required_fields.len(), 2, "Expected 2 required fields: description, code. Got: {:?}", required_fields);
+        assert!(
+            !required_fields.contains(&"name".to_string()),
+            "name should not be required"
+        );
+        assert!(
+            required_fields.contains(&"description".to_string()),
+            "description should be required"
+        );
+        assert!(
+            required_fields.contains(&"code".to_string()),
+            "code should be required"
+        );
+        assert!(
+            !required_fields.contains(&"status".to_string()),
+            "status should not be required"
+        );
+        assert_eq!(
+            required_fields.len(),
+            2,
+            "Expected 2 required fields: description, code. Got: {:?}",
+            required_fields
+        );
     }
 
     // 8. Nested Struct
@@ -200,23 +226,37 @@ mod tool_arguments_derive_tests {
         });
 
         let inner_schema_actual = NestedInner::mcp_input_schema();
-        assert_eq!(inner_schema_actual, inner_schema_expected, "NestedInner schema mismatch");
+        assert_eq!(
+            inner_schema_actual, inner_schema_expected,
+            "NestedInner schema mismatch"
+        );
 
         let outer_schema = NestedOuter::mcp_input_schema();
         assert_eq!(outer_schema["type"], "object");
         assert_eq!(outer_schema["properties"]["id"]["type"], "integer");
 
         // Check inner_data (required)
-        assert_eq!(outer_schema["properties"]["inner_data"], inner_schema_expected, "inner_data schema mismatch");
+        assert_eq!(
+            outer_schema["properties"]["inner_data"], inner_schema_expected,
+            "inner_data schema mismatch"
+        );
 
         // Check optional_inner (not required, but schema is the same)
-        assert_eq!(outer_schema["properties"]["optional_inner"], inner_schema_expected, "optional_inner schema mismatch");
+        assert_eq!(
+            outer_schema["properties"]["optional_inner"], inner_schema_expected,
+            "optional_inner schema mismatch"
+        );
 
         // Check inner_list (required, array of inner_schema)
         assert_eq!(outer_schema["properties"]["inner_list"]["type"], "array");
-        assert_eq!(outer_schema["properties"]["inner_list"]["items"], inner_schema_expected, "inner_list items schema mismatch");
-        assert_eq!(outer_schema["properties"]["inner_list"]["description"], "A list of inner details");
-
+        assert_eq!(
+            outer_schema["properties"]["inner_list"]["items"], inner_schema_expected,
+            "inner_list items schema mismatch"
+        );
+        assert_eq!(
+            outer_schema["properties"]["inner_list"]["description"],
+            "A list of inner details"
+        );
 
         let required_fields: Vec<String> = outer_schema["required"]
             .as_array()
@@ -229,6 +269,11 @@ mod tool_arguments_derive_tests {
         assert!(required_fields.contains(&"inner_data".to_string()));
         assert!(!required_fields.contains(&"optional_inner".to_string()));
         assert!(required_fields.contains(&"inner_list".to_string()));
-        assert_eq!(required_fields.len(), 3, "Outer required fields mismatch. Got: {:?}", required_fields);
+        assert_eq!(
+            required_fields.len(),
+            3,
+            "Outer required fields mismatch. Got: {:?}",
+            required_fields
+        );
     }
 }
