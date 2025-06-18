@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-and-test:
@@ -28,11 +28,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Build
-        run: RUSTFLAGS="" cargo build --all --release
-
       - name: Run tests
-        run: RUSTFLAGS="" cargo test --all --release
+        run: RUSTFLAGS="" cargo test --all --all-features --release
 
       - name: Check formatting
         run: cargo fmt --all -- --check
