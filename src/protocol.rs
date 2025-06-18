@@ -20,10 +20,10 @@ mod validator {
     use tracing::{info, warn}; // Added warn
 
     // Conditional imports
-    #[cfg(test)]
-    use std::{fs, path::Path};
     #[cfg(not(test))]
-    use reqwest; // reqwest only needed for non-test
+    use reqwest;
+    #[cfg(test)]
+    use std::{fs, path::Path}; // reqwest only needed for non-test
 
     const SCHEMA_URL_CONST: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
 
@@ -102,7 +102,8 @@ mod validator {
         let validator_instance = get_or_init_schema().await;
         match validator_instance.validate(value) {
             Ok(_) => Ok(()),
-            Err(validation_error) => { // validation_error is a single ValidationError struct
+            Err(validation_error) => {
+                // validation_error is a single ValidationError struct
                 Err(Error::Other(format!(
                     "Schema validation failed: {}",
                     validation_error.to_string() // Convert the single error to string
@@ -131,11 +132,17 @@ impl<A: NetworkAdapter> ProtocolConnection<A> {
         {
             match validator::validate_message(&value).await {
                 Ok(_) => {
-                    info!("[Validator] Message is valid after async validation: {}", value);
+                    info!(
+                        "[Validator] Message is valid after async validation: {}",
+                        value
+                    );
                 }
                 Err(e) => {
                     // Log the detailed error here before returning it
-                    error!("[Validator] Schema validation failed for value {}: {}", value, e);
+                    error!(
+                        "[Validator] Schema validation failed for value {}: {}",
+                        value, e
+                    );
                     return Err(e); // Propagate the error
                 }
             }

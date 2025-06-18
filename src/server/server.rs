@@ -26,12 +26,23 @@ type BoxedFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 #[allow(clippy::type_complexity)] // To allow complex Boxed dyn Fn types
 pub(crate) enum ToolHandler {
     /// Handler for tools registered with raw JSON Value arguments
-    Untyped(Box<dyn Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<Result<CallToolResult>> + Send + Sync>),
+    Untyped(
+        Box<
+            dyn Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<Result<CallToolResult>>
+                + Send
+                + Sync,
+        >,
+    ),
 
     /// Handler for tools registered with strongly-typed arguments.
-    Typed(Box<dyn Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<Result<CallToolResult>> + Send + Sync>),
+    Typed(
+        Box<
+            dyn Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<Result<CallToolResult>>
+                + Send
+                + Sync,
+        >,
+    ),
 }
-
 
 // --- Handler Type Definitions ---
 // The old ToolHandler type alias is replaced by the enum above.
@@ -150,9 +161,10 @@ impl Server {
                 // So we need to adapt:
                 let value_clone = (*json_args_arc).clone(); // Clone Value from Arc<Value>
                 Box::pin(handler(conn_handle, value_clone))
-            }
+            },
         )));
-        self.tools_and_handlers.insert(tool_name, (tool, handler_arc));
+        self.tools_and_handlers
+            .insert(tool_name, (tool, handler_arc));
         self
     }
 
@@ -227,11 +239,7 @@ impl Server {
     ///     );
     /// // Server is now ready to listen for connections and handle "echo" tool calls.
     /// ```
-    pub fn register_tool_typed<Args, Fut, F>(
-        mut self,
-        tool: Tool,
-        handler: F,
-    ) -> Self
+    pub fn register_tool_typed<Args, Fut, F>(mut self, tool: Tool, handler: F) -> Self
     where
         Args: DeserializeOwned + Send + Sync + 'static,
         Fut: Future<Output = Result<CallToolResult>> + Send + 'static,
@@ -249,28 +257,31 @@ impl Server {
 
                 Box::pin(async move {
                     match serde_json::from_value::<Args>((*json_args).clone()) {
-                        Ok(typed_args) => {
-                            (user_handler)(conn_handle, typed_args).await
-                        }
+                        Ok(typed_args) => (user_handler)(conn_handle, typed_args).await,
                         Err(e) => {
                             error!(tool_name = %tool_name, error = %e, "Failed to deserialize arguments for tool");
                             Ok(CallToolResult {
                                 content: vec![Content::Text {
-                                    text: format!("Invalid arguments for tool '{}': {}. Expected schema: {}",
-                                                tool_name, e, serde_json::to_string_pretty(&input_schema).unwrap_or_default()),
+                                    text: format!(
+                                        "Invalid arguments for tool '{}': {}. Expected schema: {}",
+                                        tool_name,
+                                        e,
+                                        serde_json::to_string_pretty(&input_schema)
+                                            .unwrap_or_default()
+                                    ),
                                 }],
                                 is_error: true,
                             })
                         }
                     }
                 })
-            }
+            },
         )));
 
-        self.tools_and_handlers.insert(tool.name.clone(), (tool, wrapped_handler));
+        self.tools_and_handlers
+            .insert(tool.name.clone(), (tool, wrapped_handler));
         self
     }
-
 
     /// Registers a handler for the `resources/list` request.
     pub fn on_list_resources<F, Fut>(mut self, handler: F) -> Self

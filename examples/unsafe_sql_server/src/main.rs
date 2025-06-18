@@ -8,7 +8,7 @@ use mcp_sdk::{
 use rusqlite::Connection;
 // use serde_json::json; // No longer needed
 use serde::Deserialize; // Added for deriving Deserialize
-// use serde_json::Value; // No longer needed for args
+                        // use serde_json::Value; // No longer needed for args
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, error, info, warn};
@@ -88,7 +88,11 @@ async fn execute_sql_handler(
         debug!(query = %query_owned_for_spawn, "Executing SQL");
         let conn = Connection::open(db_path).map_err(to_sdk_error)?;
 
-        if query_owned_for_spawn.trim().to_lowercase().starts_with("select") {
+        if query_owned_for_spawn
+            .trim()
+            .to_lowercase()
+            .starts_with("select")
+        {
             let mut stmt = conn.prepare(&query_owned_for_spawn).map_err(to_sdk_error)?;
             let column_names: Vec<String> = stmt
                 .column_names()
@@ -120,7 +124,9 @@ async fn execute_sql_handler(
             }
             Ok(result_text)
         } else {
-            let rows_affected = conn.execute(&query_owned_for_spawn, []).map_err(to_sdk_error)?;
+            let rows_affected = conn
+                .execute(&query_owned_for_spawn, [])
+                .map_err(to_sdk_error)?;
             Ok(format!(
                 "Query executed successfully. Rows affected: {}",
                 rows_affected
@@ -178,14 +184,18 @@ async fn main() -> Result<()> {
         db_path: args.db_file,
     });
     let server = Server::new("unsafe-sql-server")
-        .register_tool_typed( // Use register_tool_typed
-            Tool::from_args::<GetSchemaArgs>( // Use Tool::from_args
+        .register_tool_typed(
+            // Use register_tool_typed
+            Tool::from_args::<GetSchemaArgs>(
+                // Use Tool::from_args
                 "get_schema",
                 Some("Retrieves the SQL schema for all tables."),
             ),
             {
                 let state = Arc::clone(&shared_state);
-                move |conn_handle, tool_args: GetSchemaArgs| get_schema_handler(state.clone(), conn_handle, tool_args)
+                move |conn_handle, tool_args: GetSchemaArgs| {
+                    get_schema_handler(state.clone(), conn_handle, tool_args)
+                }
             },
         )
         .register_tool_typed(
@@ -195,7 +205,9 @@ async fn main() -> Result<()> {
             ),
             {
                 let state = Arc::clone(&shared_state);
-                move |conn_handle, tool_args: ExecuteSqlArgs| execute_sql_handler(state.clone(), conn_handle, tool_args)
+                move |conn_handle, tool_args: ExecuteSqlArgs| {
+                    execute_sql_handler(state.clone(), conn_handle, tool_args)
+                }
             },
         );
 

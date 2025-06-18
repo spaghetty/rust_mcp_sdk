@@ -36,14 +36,16 @@ impl ConnectionHandle {
 }
 
 /// Represents a single, active client connection and manages its lifecycle.
-pub struct ServerSession<A: NetworkAdapter> { // Made public for integration tests
+pub struct ServerSession<A: NetworkAdapter> {
+    // Made public for integration tests
     connection: ProtocolConnection<A>,
     server: Arc<Server>,
     is_initialized: bool,
 }
 
 impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
-    pub fn new(connection: ProtocolConnection<A>, server: Arc<Server>) -> Self { // Made public for integration tests
+    pub fn new(connection: ProtocolConnection<A>, server: Arc<Server>) -> Self {
+        // Made public for integration tests
         Self {
             connection,
             server,
@@ -51,7 +53,8 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
         }
     }
 
-    pub async fn run(mut self) -> Result<()> { // Made public for integration tests
+    pub async fn run(mut self) -> Result<()> {
+        // Made public for integration tests
         info!("[Session] New session task started. Waiting for messages.");
         let (notification_tx, mut notification_rx) = mpsc::channel::<String>(32);
 
@@ -113,7 +116,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
 
         let req: Request<Value> = serde_json::from_value(raw_req)?;
 
-use super::server::ToolHandler as ServerToolHandlerEnum; // Alias to avoid confusion if needed, and for clarity
+        use super::server::ToolHandler as ServerToolHandlerEnum; // Alias to avoid confusion if needed, and for clarity
 
         match req.method.as_str() {
             "tools/list" => {
@@ -135,7 +138,9 @@ use super::server::ToolHandler as ServerToolHandlerEnum; // Alias to avoid confu
             "tools/call" => {
                 let params: CallToolParams = serde_json::from_value(req.params)?;
                 // Adjusted to use tools_and_handlers and new handler signature
-                if let Some((_tool_meta, handler_arc)) = self.server.tools_and_handlers.get(&params.name) {
+                if let Some((_tool_meta, handler_arc)) =
+                    self.server.tools_and_handlers.get(&params.name)
+                {
                     let arguments_arc = Arc::new(params.arguments); // Wrap arguments in Arc<Value>
                     let result = match **handler_arc {
                         ServerToolHandlerEnum::Untyped(ref h) => h(handle, arguments_arc).await?,
@@ -394,11 +399,15 @@ mod tests {
         let list_response: JSONRPCResponse<ListToolsResult> =
             serde_json::from_str(list_response_str).unwrap();
 
-        if let JSONRPCResponse::Success(res) = list_response { // res.result is now ListToolsResult
+        if let JSONRPCResponse::Success(res) = list_response {
+            // res.result is now ListToolsResult
             assert_eq!(res.result.tools.len(), 1); // Access the .tools field
             assert_eq!(res.result.tools[0].name, "test-tool"); // Further check tool name
         } else {
-            panic!("Expected a successful response for tools/list, got: {:?}", list_response_str);
+            panic!(
+                "Expected a successful response for tools/list, got: {:?}",
+                list_response_str
+            );
         }
     }
 

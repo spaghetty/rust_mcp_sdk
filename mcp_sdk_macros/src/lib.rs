@@ -1,14 +1,23 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
-use syn::{
-    parse_macro_input, Data, DeriveInput, Field, Fields, Ident, LitBool, LitStr, Meta,
-    Result as SynResult, Token, Type, // Removed unused: Attribute, Lit, MetaList, MetaNameValue, Path, token
-};
 use syn::ext::IdentExt; // For Ident::peek_any for parsing keywords
 use syn::parse::{Parse, ParseStream};
-use proc_macro2::TokenStream as TokenStream2;
-
+use syn::{
+    parse_macro_input,
+    Data,
+    DeriveInput,
+    Field,
+    Fields,
+    Ident,
+    LitBool,
+    LitStr,
+    Meta,
+    Result as SynResult,
+    Token,
+    Type, // Removed unused: Attribute, Lit, MetaList, MetaNameValue, Path, token
+};
 
 #[derive(Default, Debug)]
 struct FieldArgs {
@@ -33,11 +42,11 @@ impl Parse for FieldArgs {
                 args.rename = Some(input.parse::<LitStr>()?.value());
             } else if key == "skip" {
                 if input.peek(Token![=]) {
-                     input.parse::<Token![=]>()?;
-                     let val_bool = input.parse::<LitBool>()?;
-                     if val_bool.value {
+                    input.parse::<Token![=]>()?;
+                    let val_bool = input.parse::<LitBool>()?;
+                    if val_bool.value {
                         args.skip = true;
-                     }
+                    }
                 } else {
                     args.skip = true;
                 }
@@ -45,7 +54,10 @@ impl Parse for FieldArgs {
                 input.parse::<Token![=]>()?;
                 args.required = Some(input.parse::<LitBool>()?.value());
             } else {
-                return Err(syn::Error::new(key.span(), format!("unknown tool_arg attribute key: {}", key)));
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unknown tool_arg attribute key: {}", key),
+                ));
             }
 
             if !input.is_empty() {
@@ -55,7 +67,6 @@ impl Parse for FieldArgs {
         Ok(args)
     }
 }
-
 
 fn parse_field_attributes(field: &Field) -> SynResult<FieldArgs> {
     let mut aggregated_args = FieldArgs::default();
@@ -84,7 +95,7 @@ fn parse_field_attributes(field: &Field) -> SynResult<FieldArgs> {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         attr.meta.to_token_stream(),
-                        "Expected #[tool_arg(key = value, ...)] format for tool_arg attribute"
+                        "Expected #[tool_arg(key = value, ...)] format for tool_arg attribute",
                     ));
                 }
             }
@@ -92,7 +103,6 @@ fn parse_field_attributes(field: &Field) -> SynResult<FieldArgs> {
     }
     Ok(aggregated_args)
 }
-
 
 fn is_option(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
@@ -107,7 +117,9 @@ fn is_option(ty: &Type) -> bool {
 fn type_to_schema(ty: &Type, struct_name: &Ident) -> TokenStream2 {
     if is_option(ty) {
         if let Type::Path(type_path) = ty {
-            if let syn::PathArguments::AngleBracketed(angle_args) = &type_path.path.segments[0].arguments {
+            if let syn::PathArguments::AngleBracketed(angle_args) =
+                &type_path.path.segments[0].arguments
+            {
                 if let Some(syn::GenericArgument::Type(inner_ty)) = angle_args.args.first() {
                     return type_to_schema(inner_ty, struct_name);
                 }
@@ -122,16 +134,28 @@ fn type_to_schema(ty: &Type, struct_name: &Ident) -> TokenStream2 {
                 let path = &type_path.path; // path is syn::Path
                 if path.is_ident("String") {
                     quote! { ::serde_json::json!({ "type": "string" }) }
-                } else if path.is_ident("i8") || path.is_ident("i16") || path.is_ident("i32") || path.is_ident("i64") || path.is_ident("isize") ||
-                          path.is_ident("u8") || path.is_ident("u16") || path.is_ident("u32") || path.is_ident("u64") || path.is_ident("usize") {
+                } else if path.is_ident("i8")
+                    || path.is_ident("i16")
+                    || path.is_ident("i32")
+                    || path.is_ident("i64")
+                    || path.is_ident("isize")
+                    || path.is_ident("u8")
+                    || path.is_ident("u16")
+                    || path.is_ident("u32")
+                    || path.is_ident("u64")
+                    || path.is_ident("usize")
+                {
                     quote! { ::serde_json::json!({ "type": "integer" }) }
                 } else if path.is_ident("f32") || path.is_ident("f64") {
                     quote! { ::serde_json::json!({ "type": "number" }) }
                 } else if path.is_ident("bool") {
                     quote! { ::serde_json::json!({ "type": "boolean" }) }
                 } else if path.segments.len() == 1 && path.segments[0].ident == "Vec" {
-                     if let syn::PathArguments::AngleBracketed(angle_args) = &path.segments[0].arguments {
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = angle_args.args.first() {
+                    if let syn::PathArguments::AngleBracketed(angle_args) =
+                        &path.segments[0].arguments
+                    {
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = angle_args.args.first()
+                        {
                             let items_schema = type_to_schema(inner_ty, struct_name);
                             return quote! { ::serde_json::json!({ "type": "array", "items": #items_schema }) };
                         }
@@ -141,9 +165,9 @@ fn type_to_schema(ty: &Type, struct_name: &Ident) -> TokenStream2 {
                     let type_ident_str = quote!(#path).to_string().replace(' ', "");
                     let struct_name_str = struct_name.to_string();
                     if type_ident_str == struct_name_str {
-                         quote! { compile_error!(concat!("Recursive type definition for schema not supported directly for type: ", #type_ident_str)) }
+                        quote! { compile_error!(concat!("Recursive type definition for schema not supported directly for type: ", #type_ident_str)) }
                     } else {
-                         quote! { #path::mcp_input_schema() }
+                        quote! { #path::mcp_input_schema() }
                     }
                 }
             } else {
@@ -151,7 +175,10 @@ fn type_to_schema(ty: &Type, struct_name: &Ident) -> TokenStream2 {
             }
         }
         _ => {
-            let error_msg = format!("Unsupported field type for ToolArguments schema generation: {:?}", ty);
+            let error_msg = format!(
+                "Unsupported field type for ToolArguments schema generation: {:?}",
+                ty
+            );
             quote! { compile_error!(#error_msg) }
         }
     }
@@ -192,7 +219,10 @@ pub fn tool_arguments_derive(input: TokenStream) -> TokenStream {
                     continue;
                 }
 
-                let actual_field_name_str = field_attrs.rename.clone().unwrap_or_else(|| field_name_ident.to_string());
+                let actual_field_name_str = field_attrs
+                    .rename
+                    .clone()
+                    .unwrap_or_else(|| field_name_ident.to_string());
 
                 let base_schema_ts = type_to_schema(field_type, name);
 

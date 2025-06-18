@@ -4,9 +4,9 @@
 //! designed to be serialized to and deserialized from JSON according to the MCP specification.
 //! We use the `serde` library for robust and efficient JSON handling.
 
+use crate::ToolArgumentsDescriptor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value; // Removed json here, as it's not used in this file anymore
-use crate::ToolArgumentsDescriptor;
 
 // --- Base MCP Message Trait ---
 /// A trait for all MCP messages that have a `method` field.
@@ -411,12 +411,13 @@ pub struct ListToolsChangedParams {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json; // Ensure json macro is available for all tests in this module
-    use crate::ToolArgumentsDescriptor; // For test_tool_from_args
+    use crate::ToolArgumentsDescriptor;
+    use serde_json::json; // Ensure json macro is available for all tests in this module // For test_tool_from_args
 
     // Moved tests from outside the module into here
     #[test]
-    fn test_mcp_message_trait_request_moved() { // Renamed to avoid conflict if original is not removed by diff
+    fn test_mcp_message_trait_request_moved() {
+        // Renamed to avoid conflict if original is not removed by diff
         let request = Request {
             jsonrpc: "2.0".to_string(),
             id: RequestId::Num(1),
@@ -464,7 +465,6 @@ mod tests {
         assert_eq!(default_tool.input_schema, Value::Null);
     }
 
-
     // Dummy struct for testing Tool::from_args
     struct MyTestArgs;
     impl ToolArgumentsDescriptor for MyTestArgs {
@@ -483,11 +483,14 @@ mod tests {
     fn test_tool_from_args() {
         let tool = Tool::from_args::<MyTestArgs>(
             "my_test_tool_from_args",
-            Some("A tool created with from_args.")
+            Some("A tool created with from_args."),
         );
 
         assert_eq!(tool.name, "my_test_tool_from_args");
-        assert_eq!(tool.description, Some("A tool created with from_args.".to_string()));
+        assert_eq!(
+            tool.description,
+            Some("A tool created with from_args.".to_string())
+        );
 
         let expected_schema = json!({
             "type": "object",
