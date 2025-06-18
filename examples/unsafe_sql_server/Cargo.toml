@@ -9,6 +9,8 @@ publish = false
 clap = { version = "4.5", features = ["derive"] }
 # The main SDK crate, referenced from the parent directory
 mcp-sdk = { path = "../../" }
+once_cell = "1.19" # Added for ToolArguments macro
+serde = { version = "1.0", features = ["derive"] } # Added for #[derive(Deserialize)]
 # The SQLite driver. The "bundled" feature makes installation easier
 # as it compiles a local version of SQLite instead of relying on a system-wide one.
 rusqlite = { version = "0.31.0", features = ["bundled"] }

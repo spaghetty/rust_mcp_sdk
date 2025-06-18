@@ -15,40 +15,100 @@ mod validator {
     use super::*;
     use crate::{types::LATEST_PROTOCOL_VERSION, Error};
     use jsonschema;
-    use once_cell::sync::Lazy; // To ensure we only fetch the schema once.
-    use reqwest;
     use serde_json::Value;
+    use tokio::sync::OnceCell;
+    use tracing::{info, warn}; // Added warn
 
-    // The official URL for the raw JSON schema file.
-    const SCHEMA_URL: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
+    // Conditional imports
+    #[cfg(not(test))]
+    use reqwest;
+    #[cfg(test)]
+    use std::{fs, path::Path}; // reqwest only needed for non-test
 
-    // This static variable will fetch and compile the schema exactly once.
-    // The first time it's accessed, the code inside the closure will run.
-    // Subsequent accesses will just get the cached, compiled schema.
-    static COMPILED_SCHEMA: Lazy<jsonschema::Validator> = Lazy::new(|| {
-        info!("[Validator] Fetching and compiling official MCP schema from URL...");
-        let schema_url = String::from(SCHEMA_URL).replace("**", LATEST_PROTOCOL_VERSION);
-        // Use a blocking HTTP client for this one-time fetch.
-        let schema_value: Value = reqwest::blocking::get(schema_url)
-            .expect("Failed to fetch schema from URL")
-            .json()
-            .expect("Failed to parse schema JSON");
+    const SCHEMA_URL_CONST: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
 
-        let validator = jsonschema::validator_for(&schema_value)
-            .expect("Failed to compile official MCP schema");
+    static ASYNC_INIT_SCHEMA: OnceCell<jsonschema::Validator> = OnceCell::const_new();
 
-        info!("[Validator] Schema successfully compiled.");
-        validator
-    });
+    async fn get_or_init_schema() -> &'static jsonschema::Validator {
+        ASYNC_INIT_SCHEMA.get_or_init(|| async {
+            info!("[Validator] Initializing schema (async)...");
+
+            let schema_content_loader = || -> std::result::Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+                let schema_url_val = String::from(SCHEMA_URL_CONST).replace("**", LATEST_PROTOCOL_VERSION);
+
+                #[cfg(test)]
+                {
+                    let version = LATEST_PROTOCOL_VERSION;
+                    let local_schema_path_str = format!("schemas/{}/schema.json", version);
+                    let local_schema_path = Path::new(&local_schema_path_str);
+
+                    info!("[Validator] TEST MODE: Attempting to load schema from local file: {}", local_schema_path_str);
+                    if local_schema_path.exists() {
+                        match fs::read_to_string(local_schema_path) {
+                            Ok(file_content) => {
+                                match serde_json::from_str::<Value>(&file_content) {
+                                    Ok(schema_value) => {
+                                        info!("[Validator] TEST MODE: Successfully loaded schema from local file: {}", local_schema_path_str);
+                                        return Ok(schema_value);
+                                    }
+                                    Err(e) => {
+                                        warn!("[Validator] TEST MODE: Failed to parse local schema JSON from '{}'. Error: {}. Falling back to network fetch.", local_schema_path_str, e);
+                                        // Proceed to network fetch below
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[Validator] TEST MODE: Failed to read local schema file '{}'. Error: {}. Falling back to network fetch.", local_schema_path_str, e);
+                                // Proceed to network fetch below
+                            }
+                        }
+                    } else {
+                        info!("[Validator] TEST MODE: Local schema file not found at '{}'. Falling back to network fetch.", local_schema_path_str);
+                        // Proceed to network fetch below
+                    }
+                }
+
+                // Network fetch (executes if not test, or if test mode failed to return Ok above)
+                info!("[Validator] Fetching schema from URL: {}", schema_url_val);
+                let fetched_value = reqwest::blocking::get(schema_url_val)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                    .json::<Value>()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                Ok(fetched_value)
+            };
+
+            let schema_value = match tokio::task::spawn_blocking(schema_content_loader).await {
+                Ok(Ok(val)) => val,
+                Ok(Err(e)) => panic!("Schema content loader failed: {}", e),
+                Err(join_err) => panic!("Spawn_blocking for schema content loader panicked: {}", join_err),
+            };
+
+            // Perform blocking schema compilation in spawn_blocking
+            let compiled_validator = match tokio::task::spawn_blocking(move || {
+                jsonschema::validator_for(&schema_value) // Using the original API call
+                    .expect("Failed to compile official MCP schema (from spawn_blocking)")
+            }).await {
+                Ok(validator) => validator,
+                Err(join_err) => panic!("Spawn_blocking for schema compilation panicked: {}", join_err),
+            };
+
+            info!("[Validator] Schema successfully compiled (async).");
+            compiled_validator
+        }).await
+    }
+
     /// Validates a given JSON-RPC message (Request, Response, etc.) against the root schema.
-    /// The schema itself contains definitions for all message types.
-    pub fn validate_message(value: &Value) -> Result<()> {
-        match COMPILED_SCHEMA.validate(value) {
+    pub async fn validate_message(value: &Value) -> Result<()> {
+        let validator_instance = get_or_init_schema().await;
+        match validator_instance.validate(value) {
             Ok(_) => Ok(()),
-            Err(error) => Err(Error::Other(format!(
-                "Schema validation failed: {}",
-                error.to_string()
-            ))),
+            Err(validation_error) => {
+                // validation_error is a single ValidationError struct
+                Err(Error::Other(format!(
+                    "Schema validation failed: {}",
+                    validation_error.to_string() // Convert the single error to string
+                )))
+            }
         }
     }
 }
@@ -70,10 +130,21 @@ impl<A: NetworkAdapter> ProtocolConnection<A> {
 
         #[cfg(feature = "schema-validation")]
         {
-            // If the feature is enabled, validate the JSON value before sending.
-            match validator::validate_message(&value) {
-                Ok(_) => info!("[Vaidator] Message is valid {}", value),
-                Err(e) => error!("[Validator] message {} is not valid for: {}", value, e),
+            match validator::validate_message(&value).await {
+                Ok(_) => {
+                    info!(
+                        "[Validator] Message is valid after async validation: {}",
+                        value
+                    );
+                }
+                Err(e) => {
+                    // Log the detailed error here before returning it
+                    error!(
+                        "[Validator] Schema validation failed for value {}: {}",
+                        value, e
+                    );
+                    return Err(e); // Propagate the error
+                }
             }
         }
         let json_string = serde_json::to_string(&value)?;

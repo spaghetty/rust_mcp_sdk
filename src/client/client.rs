@@ -199,7 +199,9 @@ impl Client {
 
     /// Sends a `tools/list` request to the server to get a list of available tools.
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
-        self.send_request("tools/list", ListToolsParams {}).await
+        let list_tools_result: crate::types::ListToolsResult =
+            self.send_request("tools/list", ListToolsParams {}).await?;
+        Ok(list_tools_result.tools)
     }
 
     /// Sends a `tools/call` request to execute a specific tool on the server.

@@ -24,13 +24,21 @@ async-trait = "0.1"
 # Add dashmap for concurrent request tracking
 dashmap = "5.5.3"
 jsonschema = { version = "0.30.0", optional = true }
-once_cell = { version = "1.19", optional = true }
+# reqwest will pull in once_cell if schema-validation is enabled.
+# The ToolArguments macro always needs once_cell, so make it a direct dependency.
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.41"
+mcp_sdk_macros = { path = "./mcp_sdk_macros", version = "0.1.0" }
+once_cell = "1.19" # Now a direct, non-optional dependency
+
 
 [features]
 default = []
-schema-validation = ["dep:jsonschema", "dep:once_cell", "dep:reqwest"]
+schema-validation = ["dep:jsonschema", "dep:reqwest"] # once_cell is now a direct dependency
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] } # Added for test logging
+mockito = "1.0.0-alpha.1" # For mocking HTTP requests in tests (already present in a previous version of this file)
