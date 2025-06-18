@@ -36,14 +36,14 @@ impl ConnectionHandle {
 }
 
 /// Represents a single, active client connection and manages its lifecycle.
-pub(crate) struct ServerSession<A: NetworkAdapter> {
+pub struct ServerSession<A: NetworkAdapter> { // Made public for integration tests
     connection: ProtocolConnection<A>,
     server: Arc<Server>,
     is_initialized: bool,
 }
 
 impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
-    pub(crate) fn new(connection: ProtocolConnection<A>, server: Arc<Server>) -> Self {
+    pub fn new(connection: ProtocolConnection<A>, server: Arc<Server>) -> Self { // Made public for integration tests
         Self {
             connection,
             server,
@@ -51,7 +51,7 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
         }
     }
 
-    pub(crate) async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> { // Made public for integration tests
         info!("[Session] New session task started. Waiting for messages.");
         let (notification_tx, mut notification_rx) = mpsc::channel::<String>(32);
 
@@ -61,7 +61,12 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                     let raw_req = match result {
                         Ok(Some(msg)) => msg,
                         Ok(None) => {
-                            info!("[Session] some empty message received");
+                            info!("[Session] Connection closed by client. Draining pending notifications.");
+                            // DRAIN NOTIFICATIONS BEFORE RETURNING
+                            notification_rx.close(); // Close the sender side of the channel
+                            while let Some(notif_json) = notification_rx.recv().await {
+                                self.connection.send_raw(&notif_json).await?;
+                            }
                             return Ok(());
                         }
                         Err(e) => {
@@ -108,22 +113,34 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
 
         let req: Request<Value> = serde_json::from_value(raw_req)?;
 
+use super::server::ToolHandler as ServerToolHandlerEnum; // Alias to avoid confusion if needed, and for clarity
+
         match req.method.as_str() {
             "tools/list" => {
-                let tools: Vec<Tool> = self.server.tools.values().cloned().collect();
-                let result = ListToolsResult { tools: tools };
+                // Adjusted to use tools_and_handlers
+                let tools: Vec<Tool> = self
+                    .server
+                    .tools_and_handlers
+                    .values()
+                    .map(|(tool, _handler)| tool.clone())
+                    .collect();
+                let result = ListToolsResult { tools };
                 let response = Response {
                     id: req.id,
                     jsonrpc: "2.0".to_string(),
-                    result: result,
+                    result,
                 };
                 self.connection.send_serializable(response).await
             }
             "tools/call" => {
                 let params: CallToolParams = serde_json::from_value(req.params)?;
-                if let Some(handler) = self.server.tool_handlers.get(&params.name) {
-                    // Look up the specific handler and call it.
-                    let result = handler(handle, params.arguments).await?;
+                // Adjusted to use tools_and_handlers and new handler signature
+                if let Some((_tool_meta, handler_arc)) = self.server.tools_and_handlers.get(&params.name) {
+                    let arguments_arc = Arc::new(params.arguments); // Wrap arguments in Arc<Value>
+                    let result = match **handler_arc {
+                        ServerToolHandlerEnum::Untyped(ref h) => h(handle, arguments_arc).await?,
+                        ServerToolHandlerEnum::Typed(ref h) => h(handle, arguments_arc).await?,
+                    };
                     let response = Response {
                         id: req.id,
                         jsonrpc: "2.0".to_string(),
@@ -186,7 +203,8 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
             let mut capabilities = ServerCapabilities::default();
 
             // 2. Check if any tools have been registered.
-            if !self.server.tools.is_empty() {
+            // Adjusted to use tools_and_handlers
+            if !self.server.tools_and_handlers.is_empty() {
                 // If so, add the "tools" capability to our announcement.
                 capabilities.tools = Some(ToolsCapability {
                     // For now, we can hardcode this sub-capability to false.

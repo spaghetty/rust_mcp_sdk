@@ -5,7 +5,14 @@
 //! We use the `serde` library for robust and efficient JSON handling.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::Value; // Removed json here, as it's not used in this file anymore
+use crate::ToolArgumentsDescriptor;
+
+// --- Base MCP Message Trait ---
+/// A trait for all MCP messages that have a `method` field.
+pub trait MCPMessage {
+    fn method(&self) -> &str;
+}
 
 // --- Protocol Version ---
 pub const LATEST_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -29,8 +36,82 @@ impl Default for Tool {
         Self {
             name: String::new(),
             description: None,
-            input_schema: Value::Object(Default::default()),
+            input_schema: Value::Null, // Changed from Value::Object(Default::default())
             annotations: None,
+        }
+    }
+}
+
+impl Tool {
+    pub fn new(
+        name: impl Into<String>,
+        description: Option<impl Into<String>>,
+        input_schema: Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.map(|s| s.into()),
+            input_schema,
+            annotations: None, // Defaulting annotations to None
+        }
+    }
+
+    /// Creates a new `Tool` instance, automatically deriving its `input_schema`
+    /// from a type `T` that implements the `ToolArgumentsDescriptor` trait.
+    ///
+    /// This is the preferred way to create `Tool` instances when using strongly-typed
+    /// arguments, as it ensures consistency between the tool's advertised schema
+    /// and the actual Rust types used by its handler.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T`: A type that implements `ToolArgumentsDescriptor`. This is typically
+    ///   achieved by deriving `#[derive(ToolArguments)]` on a struct.
+    ///
+    /// # Arguments
+    ///
+    /// * `name`: The programmatic name of the tool (e.g., "get_weather"). This should
+    ///   be unique within the server's toolset.
+    /// * `description`: An optional human-readable description of what the tool does.
+    ///   This can be used by clients to understand the tool's purpose.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tool` instance with its `input_schema` populated by calling
+    /// `T::mcp_input_schema()`. The `annotations` field is defaulted to `None`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_sdk::types::Tool;
+    /// use mcp_sdk::{ToolArguments, ToolArgumentsDescriptor}; // For derive and trait
+    /// use serde::Deserialize; // For use with typed handlers
+    /// use serde_json::json;
+    ///
+    /// #[derive(ToolArguments, Deserialize)]
+    /// struct WeatherArgs {
+    ///     #[tool_arg(desc = "The city for which to get the weather.")]
+    ///     city: String,
+    ///     unit: Option<String>, // e.g., "celsius" or "fahrenheit"
+    /// }
+    ///
+    /// let weather_tool = Tool::from_args::<WeatherArgs>(
+    ///     "get_weather",
+    ///     Some("Fetches the current weather for a specified city.")
+    /// );
+    ///
+    /// assert_eq!(weather_tool.name, "get_weather");
+    /// assert!(weather_tool.input_schema["properties"].get("city").is_some());
+    /// ```
+    pub fn from_args<T: ToolArgumentsDescriptor>(
+        name: impl Into<String>,
+        description: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.map(|s| s.into()),
+            input_schema: T::mcp_input_schema(),
+            annotations: None, // Defaulting annotations to None
         }
     }
 }
@@ -180,6 +261,12 @@ pub struct Request<T> {
     pub params: T,
 }
 
+impl<T> MCPMessage for Request<T> {
+    fn method(&self) -> &str {
+        &self.method
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response<T> {
     pub jsonrpc: String,
@@ -201,6 +288,12 @@ pub struct Notification<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub params: Option<T>,
+}
+
+impl<T> MCPMessage for Notification<T> {
+    fn method(&self) -> &str {
+        &self.method
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -318,8 +411,96 @@ pub struct ListToolsChangedParams {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::json; // Ensure json macro is available for all tests in this module
+    use crate::ToolArgumentsDescriptor; // For test_tool_from_args
 
+    // Moved tests from outside the module into here
+    #[test]
+    fn test_mcp_message_trait_request_moved() { // Renamed to avoid conflict if original is not removed by diff
+        let request = Request {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Num(1),
+            method: "test/method".to_string(),
+            params: CallToolParams {
+                name: "test_tool".to_string(),
+                arguments: json!({}),
+            },
+        };
+        assert_eq!(request.method(), "test/method");
+    }
+
+    #[test]
+    fn test_mcp_message_trait_notification_moved() {
+        let notification = Notification::<ListToolsChangedParams> {
+            jsonrpc: "2.0".to_string(),
+            method: "test/notification".to_string(),
+            params: None,
+        };
+        assert_eq!(notification.method(), "test/notification");
+    }
+
+    #[test]
+    fn test_tool_new_helper_moved() {
+        let tool_name = "my_tool";
+        let tool_desc = "A description for my tool.";
+        let input_schema = json!({"type": "string"});
+
+        let tool1 = Tool::new(tool_name, Some(tool_desc), input_schema.clone());
+        assert_eq!(tool1.name, tool_name);
+        assert_eq!(tool1.description, Some(tool_desc.to_string()));
+        assert_eq!(tool1.input_schema, input_schema);
+        assert!(tool1.annotations.is_none());
+
+        let tool2 = Tool::new("another_tool", None::<String>, json!({}));
+        assert_eq!(tool2.name, "another_tool");
+        assert!(tool2.description.is_none());
+        assert_eq!(tool2.input_schema, json!({}));
+        assert!(tool2.annotations.is_none());
+    }
+
+    #[test]
+    fn test_tool_default_input_schema_moved() {
+        let default_tool = Tool::default();
+        assert_eq!(default_tool.input_schema, Value::Null);
+    }
+
+
+    // Dummy struct for testing Tool::from_args
+    struct MyTestArgs;
+    impl ToolArgumentsDescriptor for MyTestArgs {
+        fn mcp_input_schema() -> serde_json::Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "test_prop": { "type": "string" }
+                },
+                "required": ["test_prop"]
+            })
+        }
+    }
+
+    #[test]
+    fn test_tool_from_args() {
+        let tool = Tool::from_args::<MyTestArgs>(
+            "my_test_tool_from_args",
+            Some("A tool created with from_args.")
+        );
+
+        assert_eq!(tool.name, "my_test_tool_from_args");
+        assert_eq!(tool.description, Some("A tool created with from_args.".to_string()));
+
+        let expected_schema = json!({
+            "type": "object",
+            "properties": {
+                "test_prop": { "type": "string" }
+            },
+            "required": ["test_prop"]
+        });
+        assert_eq!(tool.input_schema, expected_schema);
+        assert!(tool.annotations.is_none());
+    }
+
+    // Original tests continue from here
     #[test]
     fn test_tool_roundtrip() {
         let tool = Tool {
@@ -476,3 +657,7 @@ mod tests {
         }
     }
 }
+
+// Ensure the loose tests are removed if they were not part of the SEARCH block
+// This diff assumes the loose tests were exactly as previously generated.
+// If their content was different, they might not be removed by this diff alone.

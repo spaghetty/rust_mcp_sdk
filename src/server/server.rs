@@ -16,12 +16,25 @@ use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tracing::{error, info};
 
+use crate::types::Content; // Added for error reporting in typed handlers
+use serde::de::DeserializeOwned; // For register_tool_typed
+
+// Type alias for the boxed future returned by handlers
+type BoxedFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+// The internal representation of a tool handler
+#[allow(clippy::type_complexity)] // To allow complex Boxed dyn Fn types
+pub(crate) enum ToolHandler {
+    /// Handler for tools registered with raw JSON Value arguments
+    Untyped(Box<dyn Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<Result<CallToolResult>> + Send + Sync>),
+
+    /// Handler for tools registered with strongly-typed arguments.
+    Typed(Box<dyn Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<Result<CallToolResult>> + Send + Sync>),
+}
+
+
 // --- Handler Type Definitions ---
-pub(crate) type ToolHandler = Arc<
-    dyn Fn(ConnectionHandle, Value) -> Pin<Box<dyn Future<Output = Result<CallToolResult>> + Send>>
-        + Send
-        + Sync,
->;
+// The old ToolHandler type alias is replaced by the enum above.
 
 pub(crate) type ListResourcesHandler = Arc<
     dyn Fn(ConnectionHandle) -> Pin<Box<dyn Future<Output = Result<Vec<Resource>>> + Send>>
@@ -54,7 +67,7 @@ pub(crate) type GetPromptHandler = Arc<
 /// A high-level, asynchronous server for handling MCP requests.
 ///
 /// This struct uses a builder pattern to register handlers for different MCP methods.
-/// After configuration, the [`listen`] method is called to start the server.
+/// After configuration, the [`Self::tcp_listen`] method is called to start the server.
 /// The server will then listen for incoming TCP connections, spawning a new
 /// asynchronous task for each client to handle them concurrently.
 ///
@@ -94,8 +107,8 @@ pub(crate) type GetPromptHandler = Arc<
 #[derive(Default, Clone)]
 pub struct Server {
     pub(crate) name: String,
-    pub(crate) tools: HashMap<String, Tool>,
-    pub(crate) tool_handlers: HashMap<String, ToolHandler>,
+    // Consolidated tools and handlers: tool_name -> (Tool_metadata, Arc_to_handler_enum)
+    pub(crate) tools_and_handlers: HashMap<String, (Tool, Arc<ToolHandler>)>,
     pub(crate) list_resources_handler: Option<ListResourcesHandler>,
     pub(crate) read_resource_handler: Option<ReadResourceHandler>,
     pub(crate) list_prompts_handler: Option<ListPromptsHandler>,
@@ -123,13 +136,141 @@ impl Server {
         Fut: Future<Output = Result<CallToolResult>> + Send + 'static,
     {
         let tool_name = tool.name.clone();
-        self.tools.insert(tool_name.clone(), tool);
-        self.tool_handlers.insert(
-            tool_name,
-            Arc::new(move |handle, args| Box::pin(handler(handle, args))),
-        );
+        let handler_arc = Arc::new(ToolHandler::Untyped(Box::new(
+            move |conn_handle, json_args_arc| {
+                // The original handler expects Value, not Arc<Value>.
+                // We clone from Arc if the original handler needs ownership,
+                // or pass a reference if it can work with &Value.
+                // For now, let's assume the original handler took Value by value.
+                // The public API of register_tool took `Value`, not `Arc<Value>`.
+                // So, the closure it stores needs to match the new internal ToolHandler::Untyped signature.
+                // This means the outer Box<dyn Fn...> for Untyped should match the new signature.
+                // The handler passed to `register_tool` is `F: Fn(ConnectionHandle, Value) -> Fut`
+                // The new Untyped signature is `Fn(ConnectionHandle, Arc<Value>) -> BoxedFuture<...>`
+                // So we need to adapt:
+                let value_clone = (*json_args_arc).clone(); // Clone Value from Arc<Value>
+                Box::pin(handler(conn_handle, value_clone))
+            }
+        )));
+        self.tools_and_handlers.insert(tool_name, (tool, handler_arc));
         self
     }
+
+    /// Registers a tool with a handler that accepts strongly-typed arguments.
+    ///
+    /// This method is preferred for new tool implementations as it provides better
+    /// type safety and ergonomics compared to `register_tool`, which uses raw
+    /// `serde_json::Value` for arguments.
+    ///
+    /// The `tool` definition, including its `input_schema`, should be created using
+    /// `Tool::from_args<Args>()`, where `Args` is the struct defining the arguments
+    /// for this tool. The `Args` struct must derive `mcp_sdk::ToolArguments` (which
+    /// provides the schema) and `serde::Deserialize` (to allow the server to
+    /// deserialize the incoming JSON arguments into the struct).
+    ///
+    /// # Type Parameters
+    ///
+    /// * `Args`: The struct type representing the arguments for this tool. It must
+    ///   implement `serde::de::DeserializeOwned` and be `Send + Sync + 'static`.
+    ///   Typically, this struct will also derive `mcp_sdk::ToolArguments`.
+    /// * `Fut`: The type of future returned by the handler, which resolves to
+    ///   `Result<CallToolResult>`.
+    /// * `F`: The type of the handler closure. It takes a `ConnectionHandle` and an
+    ///   instance of `Args`, and returns `Fut`.
+    ///
+    /// # Arguments
+    ///
+    /// * `tool`: The `Tool` metadata. The `input_schema` of this tool should match
+    ///   the schema generated from `Args`. Using `Tool::from_args::<Args>(...)`
+    ///   ensures this.
+    /// * `handler`: An asynchronous function or closure that will be called when the
+    ///   tool is invoked. It receives a `ConnectionHandle` (for sending notifications)
+    ///   and the deserialized, typed arguments of type `Args`.
+    ///
+    /// # Panics
+    ///
+    /// This method internally handles argument deserialization. If deserialization fails
+    /// (e.g., due to missing required fields or type mismatches in the client's request),
+    /// an error `CallToolResult` is automatically generated and sent to the client.
+    /// The provided `handler` will not be called in such cases.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mcp_sdk::server::{Server, ConnectionHandle};
+    /// use mcp_sdk::types::{Tool, CallToolResult, Content};
+    /// use mcp_sdk::{Result as SdkResult, ToolArguments};
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(ToolArguments, Deserialize)]
+    /// struct MyTypedToolArgs {
+    ///     #[tool_arg(desc = "A message to echo.")]
+    ///     message: String,
+    ///     repeat: Option<i32>,
+    /// }
+    ///
+    /// async fn my_typed_handler(
+    ///     _handle: ConnectionHandle,
+    ///     args: MyTypedToolArgs,
+    /// ) -> SdkResult<CallToolResult> {
+    ///     let repeated_message = args.message.repeat(args.repeat.unwrap_or(1) as usize);
+    ///     Ok(CallToolResult {
+    ///         content: vec![Content::Text { text: repeated_message }],
+    ///         is_error: false,
+    ///     })
+    /// }
+    ///
+    /// let server = Server::new("my-server")
+    ///     .register_tool_typed(
+    ///         Tool::from_args::<MyTypedToolArgs>("echo", Some("Echoes a message.")),
+    ///         my_typed_handler
+    ///     );
+    /// // Server is now ready to listen for connections and handle "echo" tool calls.
+    /// ```
+    pub fn register_tool_typed<Args, Fut, F>(
+        mut self,
+        tool: Tool,
+        handler: F,
+    ) -> Self
+    where
+        Args: DeserializeOwned + Send + Sync + 'static,
+        Fut: Future<Output = Result<CallToolResult>> + Send + 'static,
+        F: Fn(ConnectionHandle, Args) -> Fut + Send + Sync + 'static,
+    {
+        let user_handler_arc = Arc::new(handler);
+        let tool_name_clone_for_error = tool.name.clone(); // For error messages
+        let tool_input_schema_clone_for_error = tool.input_schema.clone(); // For error messages
+
+        let wrapped_handler = Arc::new(ToolHandler::Typed(Box::new(
+            move |conn_handle: ConnectionHandle, json_args: Arc<Value>| {
+                let user_handler = Arc::clone(&user_handler_arc);
+                let tool_name = tool_name_clone_for_error.clone();
+                let input_schema = tool_input_schema_clone_for_error.clone();
+
+                Box::pin(async move {
+                    match serde_json::from_value::<Args>((*json_args).clone()) {
+                        Ok(typed_args) => {
+                            (user_handler)(conn_handle, typed_args).await
+                        }
+                        Err(e) => {
+                            error!(tool_name = %tool_name, error = %e, "Failed to deserialize arguments for tool");
+                            Ok(CallToolResult {
+                                content: vec![Content::Text {
+                                    text: format!("Invalid arguments for tool '{}': {}. Expected schema: {}",
+                                                tool_name, e, serde_json::to_string_pretty(&input_schema).unwrap_or_default()),
+                                }],
+                                is_error: true,
+                            })
+                        }
+                    }
+                })
+            }
+        )));
+
+        self.tools_and_handlers.insert(tool.name.clone(), (tool, wrapped_handler));
+        self
+    }
+
 
     /// Registers a handler for the `resources/list` request.
     pub fn on_list_resources<F, Fut>(mut self, handler: F) -> Self
@@ -251,11 +392,11 @@ mod tests {
         let server = Server::new("test-server")
             .register_tool(dummy_tool.clone(), dummy_handler)
             .on_list_prompts(|_| async { Ok(ListPromptsResult { prompts: vec![] }) });
-        assert_eq!(server.tools.len(), 1);
-        assert!(server.tools.contains_key("my-test-tool"));
-        // Check that the tool's handler was added to the `tool_handlers` map.
-        assert_eq!(server.tool_handlers.len(), 1);
-        assert!(server.tool_handlers.contains_key("my-test-tool"));
+
+        assert_eq!(server.tools_and_handlers.len(), 1);
+        assert!(server.tools_and_handlers.contains_key("my-test-tool"));
+        let (registered_tool, _handler) = server.tools_and_handlers.get("my-test-tool").unwrap();
+        assert_eq!(registered_tool.name, dummy_tool.name);
 
         assert!(server.list_prompts_handler.is_some());
     }

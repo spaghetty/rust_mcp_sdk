@@ -3,11 +3,12 @@
 use clap::Parser;
 use mcp_sdk::{
     error::{Error, Result},
-    CallToolResult, ConnectionHandle, Content, Server, StdioAdapter, Tool,
+    CallToolResult, ConnectionHandle, Content, Server, StdioAdapter, Tool, ToolArguments,
 };
 use rusqlite::Connection;
-use serde_json::json;
-use serde_json::Value;
+// use serde_json::json; // No longer needed
+use serde::Deserialize; // Added for deriving Deserialize
+// use serde_json::Value; // No longer needed for args
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, error, info, warn};
@@ -18,6 +19,15 @@ use tracing_subscriber::EnvFilter;
 struct Args {
     #[arg(long, default_value = "local_database.db")]
     db_file: String,
+}
+
+#[derive(ToolArguments, Deserialize)] // Added Deserialize
+struct GetSchemaArgs {}
+
+#[derive(ToolArguments, Deserialize)] // Added Deserialize
+struct ExecuteSqlArgs {
+    #[tool_arg(desc = "The SQL query to execute.")]
+    query: String,
 }
 
 struct ServerState {
@@ -32,7 +42,7 @@ fn to_sdk_error<E: std::fmt::Display>(err: E) -> Error {
 async fn get_schema_handler(
     state: Arc<ServerState>,
     _handle: ConnectionHandle,
-    _args: Value,
+    _args: GetSchemaArgs, // New: typed struct
 ) -> Result<CallToolResult> {
     info!("Handling 'get_schema' request");
     let db_path = state.db_path.clone();
@@ -64,22 +74,22 @@ async fn get_schema_handler(
 async fn execute_sql_handler(
     state: Arc<ServerState>,
     _handle: ConnectionHandle,
-    args: Value,
+    args: ExecuteSqlArgs, // New: typed struct
 ) -> Result<CallToolResult> {
-    let query = args
-        .get("query")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Other("Missing 'query' argument for execute_sql".into()))?;
+    // args.query is String.
+    // Both query_for_prepare and query_clone_for_spawn need to be owned Strings
+    // to satisfy the 'static lifetime for spawn_blocking.
+    let query_owned_for_spawn = args.query.clone();
 
     let db_path = state.db_path.clone();
-    let query_clone = query.to_string();
 
     let result_text = tokio::task::spawn_blocking(move || -> Result<String> {
-        debug!(query = %query_clone, "Executing SQL");
+        // Use the owned string inside spawn_blocking
+        debug!(query = %query_owned_for_spawn, "Executing SQL");
         let conn = Connection::open(db_path).map_err(to_sdk_error)?;
 
-        if query_clone.trim().to_lowercase().starts_with("select") {
-            let mut stmt = conn.prepare(&query_clone).map_err(to_sdk_error)?;
+        if query_owned_for_spawn.trim().to_lowercase().starts_with("select") {
+            let mut stmt = conn.prepare(&query_owned_for_spawn).map_err(to_sdk_error)?;
             let column_names: Vec<String> = stmt
                 .column_names()
                 .into_iter()
@@ -110,7 +120,7 @@ async fn execute_sql_handler(
             }
             Ok(result_text)
         } else {
-            let rows_affected = conn.execute(&query_clone, []).map_err(to_sdk_error)?;
+            let rows_affected = conn.execute(&query_owned_for_spawn, []).map_err(to_sdk_error)?;
             Ok(format!(
                 "Query executed successfully. Rows affected: {}",
                 rows_affected
@@ -168,39 +178,24 @@ async fn main() -> Result<()> {
         db_path: args.db_file,
     });
     let server = Server::new("unsafe-sql-server")
-        .register_tool(
-            Tool {
-                name: "get_schema".to_string(),
-                description: Some("Retrieves the SQL schema for all tables.".to_string()),
-                input_schema: json!({ "type": "object", "properties": {} }),
-                annotations: None,
-            },
-            // Register the specific handler for this tool.
+        .register_tool_typed( // Use register_tool_typed
+            Tool::from_args::<GetSchemaArgs>( // Use Tool::from_args
+                "get_schema",
+                Some("Retrieves the SQL schema for all tables."),
+            ),
             {
                 let state = Arc::clone(&shared_state);
-                move |handle, args| get_schema_handler(state.clone(), handle, args)
+                move |conn_handle, tool_args: GetSchemaArgs| get_schema_handler(state.clone(), conn_handle, tool_args)
             },
         )
-        .register_tool(
-            Tool {
-                name: "execute_sql".to_string(),
-                description: Some("Executes a raw SQL query against the database.".to_string()),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The SQL query to execute."
-                        }
-                    },
-                    "required": ["query"]
-                }),
-                annotations: None,
-            },
-            // Register the specific handler for this tool.
+        .register_tool_typed(
+            Tool::from_args::<ExecuteSqlArgs>(
+                "execute_sql",
+                Some("Executes a raw SQL query against the database."),
+            ),
             {
                 let state = Arc::clone(&shared_state);
-                move |handle, args| execute_sql_handler(state.clone(), handle, args)
+                move |conn_handle, tool_args: ExecuteSqlArgs| execute_sql_handler(state.clone(), conn_handle, tool_args)
             },
         );
 
