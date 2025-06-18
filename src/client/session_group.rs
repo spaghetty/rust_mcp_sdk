@@ -117,6 +117,7 @@ impl ClientSessionGroup {
                     all_tools.extend(tools);
                 }
                 Err(e) => {
+                    eprintln!("[TEST DEBUG] list_tools_all: Failed to fetch tools from a server: {:?}", e); // Added eprintln
                     // In a real application, you might want more sophisticated error handling,
                     // like collecting errors or logging them without failing the whole operation.
                     error!("Failed to fetch tools from a server: {}", e);

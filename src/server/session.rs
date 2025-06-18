@@ -390,13 +390,15 @@ mod tests {
         let responses = outgoing.lock().unwrap();
         assert_eq!(responses.len(), 2);
         let list_response_str = responses.iter().find(|s| s.contains("\"id\":1")).unwrap();
-        let list_response: JSONRPCResponse<Vec<Tool>> =
+        // Changed Vec<Tool> to ListToolsResult for deserialization
+        let list_response: JSONRPCResponse<ListToolsResult> =
             serde_json::from_str(list_response_str).unwrap();
 
-        if let JSONRPCResponse::Success(res) = list_response {
-            assert_eq!(res.result.len(), 1);
+        if let JSONRPCResponse::Success(res) = list_response { // res.result is now ListToolsResult
+            assert_eq!(res.result.tools.len(), 1); // Access the .tools field
+            assert_eq!(res.result.tools[0].name, "test-tool"); // Further check tool name
         } else {
-            panic!("Expected a successful response");
+            panic!("Expected a successful response for tools/list, got: {:?}", list_response_str);
         }
     }
 
