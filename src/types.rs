@@ -258,7 +258,7 @@ pub struct Request<T> {
     pub jsonrpc: String,
     pub id: RequestId,
     pub method: String,
-    pub params: T,
+    pub params: Option<T>,
 }
 
 impl<T> MCPMessage for Request<T> {
@@ -422,10 +422,10 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             id: RequestId::Num(1),
             method: "test/method".to_string(),
-            params: CallToolParams {
+            params: Some(CallToolParams {
                 name: "test_tool".to_string(),
                 arguments: json!({}),
-            },
+            }),
         };
         assert_eq!(request.method(), "test/method");
     }

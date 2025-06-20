@@ -99,7 +99,7 @@ mod typed_tool_integration_tests {
                 jsonrpc: "2.0".to_string(),
                 id: RequestId::Num(0),
                 method: "initialize".to_string(),
-                params: init_req_params,
+                params: Some(init_req_params),
             };
             let init_req_json = serde_json::to_string(&init_req)?;
             adapter.push_incoming(init_req_json);
@@ -142,7 +142,7 @@ mod typed_tool_integration_tests {
                 jsonrpc: "2.0".to_string(),
                 id: RequestId::Num(request_id_num),
                 method: "tools/call".to_string(),
-                params: call_params,
+                params: Some(call_params),
             };
             let request_json = serde_json::to_string(&request)?;
             self.simulate_request(request_json).await

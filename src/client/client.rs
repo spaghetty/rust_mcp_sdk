@@ -186,7 +186,7 @@ impl Client {
             jsonrpc: "2.0".to_string(),
             id,
             method: method.to_string(),
-            params: serde_json::to_value(params)?,
+            params: Some(serde_json::to_value(params)?),
         };
 
         let (tx, rx) = oneshot::channel();

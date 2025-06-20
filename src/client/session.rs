@@ -271,7 +271,7 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             id: RequestId::Num(1),
             method: "test".to_string(),
-            params: Value::Null,
+            params: None,
         };
         let (tx, _rx) = oneshot::channel();
 

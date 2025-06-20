@@ -10,6 +10,7 @@ use rusqlite::Connection;
 use serde::Deserialize; // Added for deriving Deserialize
                         // use serde_json::Value; // No longer needed for args
 use std::sync::Arc;
+use std::{env, path::PathBuf, str::FromStr};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -145,10 +146,12 @@ async fn execute_sql_handler(
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-
+    let log_dir = match env::home_dir() {
+        Some(path) => path.join("logs"),
+        None => PathBuf::from_str("~/logs").unwrap(),
+    };
     // 1. Create an appender that writes to a daily rotating log file.
-    //    Log files will be created in a `logs` directory in your project root.
-    let file_appender = tracing_appender::rolling::daily("logs", "server.log");
+    let file_appender = tracing_appender::rolling::daily(log_dir, "server.log");
 
     // 2. Create a non-blocking writer. This is a performance optimization.
     //    The `_guard` must be kept in scope for the logs to be flushed.

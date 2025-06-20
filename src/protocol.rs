@@ -17,13 +17,14 @@ mod validator {
     use jsonschema;
     use serde_json::Value;
     use tokio::sync::OnceCell;
-    use tracing::{info, warn}; // Added warn
 
     // Conditional imports
     #[cfg(not(test))]
     use reqwest;
     #[cfg(test)]
-    use std::{fs, path::Path}; // reqwest only needed for non-test
+    use std::{fs, path::Path};
+    #[cfg(test)]
+    use tracing::warn;
 
     const SCHEMA_URL_CONST: &str = "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/**/schema.json";
 
@@ -220,10 +221,10 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             id: RequestId::Num(123),
             method: "tools/call".to_string(),
-            params: CallToolParams {
+            params: Some(CallToolParams {
                 name: "test-tool".to_string(),
                 arguments: json!({ "arg1": "value1" }),
-            },
+            }),
         };
 
         // 3. Send the message. This will serialize it and put it in the mock adapter's buffer.

@@ -136,7 +136,11 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
                 self.connection.send_serializable(response).await
             }
             "tools/call" => {
-                let params: CallToolParams = serde_json::from_value(req.params)?;
+                let has_param = match req.params {
+                    Some(x) => x,
+                    None => Value::Null,
+                };
+                let params: CallToolParams = serde_json::from_value(has_param)?;
                 // Adjusted to use tools_and_handlers and new handler signature
                 if let Some((_tool_meta, handler_arc)) =
                     self.server.tools_and_handlers.get(&params.name)
@@ -254,7 +258,11 @@ impl<A: NetworkAdapter + Send + 'static> ServerSession<A> {
         Fut: Future<Output = Result<R>>,
     {
         if let Some(handler) = handler_opt.clone() {
-            match serde_json::from_value(req.params) {
+            let raw_param = match req.params {
+                Some(x) => x,
+                None => Value::Null,
+            };
+            match serde_json::from_value(raw_param) {
                 Ok(params) => {
                     match f(handler, params).await {
                         Ok(result) => {
