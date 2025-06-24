@@ -1,5 +1,7 @@
 # MCP Rust SDK – MCP Protocol Compliance Status
 
+![project image](./docs/MC?raw=true)
+
 This document tracks the compliance of the Rust SDK with the [MCP protocol](https://github.com/multimodal-coding/protocol) for both client and server operations. Update this checklist as features are audited and validated.
 
 ---
